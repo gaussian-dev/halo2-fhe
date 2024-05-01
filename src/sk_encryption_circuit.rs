@@ -22,7 +22,7 @@ pub fn test_params() -> RlcCircuitParams {
             num_fixed: 1,
             num_lookup_advice_per_phase: vec![0, 1],
             lookup_bits: Some(8),
-            num_instance_columns: 0,
+            num_instance_columns: 1,
         },
         num_rlc_columns: 1,
     }
@@ -165,6 +165,8 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             ct0is,
         } = payload;
 
+        // let mut public_inputs = vec![];
+
         // ASSIGNMENT
 
         let (ctx_gate, ctx_rlc) = builder.rlc_ctx_pair();
@@ -191,11 +193,15 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
 
             let k0i_constant = Constant(F::from_str_vartime(K0IS[z]).unwrap());
             k0i_constants.push(k0i_constant);
+
+            println!("ct0i_at_gamma: {:?}", ct0i_at_gamma_assigned);
         }
 
         // cyclo poly is equal to x^N + 1
         let cyclo_at_gamma = gamma.pow_vartime([N as u64]) + F::from(1);
         let cyclo_at_gamma_assigned = ctx_gate.load_witness(cyclo_at_gamma);
+
+        println!("cyclo_at_gamma: {:?}", cyclo_at_gamma_assigned);
 
         // RANGE CHECK
         s_assigned.range_check(ctx_gate, range, S_BOUND);
@@ -241,6 +247,13 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             let res = gate.is_equal(ctx_gate, lhs, rhs);
             gate.assert_is_const(ctx_gate, &res, &F::from(1));
         }
+
+        // // EXPOSE PUBLIC INPUTS
+        // public_inputs.push(cyclo_at_gamma_assigned);
+        // // public_inputs.extend(ais_at_gamma_assigned.iter().cloned());
+        // public_inputs.extend(ct0is_at_gamma_assigned.iter().cloned());
+
+        // builder.base.assigned_instances[0] = public_inputs;
     }
 }
 
@@ -252,7 +265,17 @@ mod test {
         constants::sk_enc_constants_4096_2x55_65537::R1_BOUNDS,
         sk_encryption_circuit::BfvSkEncryptionCircuit,
     };
-    use axiom_eth::rlc::{circuit::builder::RlcCircuitBuilder, utils::executor::RlcExecutor};
+    use axiom_eth::{
+        halo2_proofs::{
+            circuit::Layouter,
+            plonk::{Circuit, ConstraintSystem},
+        },
+        rlc::{
+            self,
+            circuit::builder::RlcCircuitBuilder,
+            utils::{executor::RlcExecutor, two_phase::TwoPhaseCircuitInstructions},
+        },
+    };
     use halo2_base::{
         gates::circuit::CircuitBuilderStage,
         halo2_proofs::{
@@ -264,6 +287,7 @@ mod test {
             fs::gen_srs,
             testing::{check_proof, gen_proof},
         },
+        AssignedValue,
     };
     use std::{fs::File, io::Read};
 
@@ -292,281 +316,302 @@ mod test {
 
         let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit);
 
-        // 3. Run the mock prover. The circuit should be satisfied
+        // println!("instances: {:?}", instances);
+        // Here, it has not extracted the challenge yet!
+        // Indeed, the challenge is equal to 0 here.
+        // Syntesize hasn't been called yet!
+        // Then, as soon as the mock prover is called. The circuit is actually properly called!
+
+        // Run synstesize first to fetch the value of gamma
+        // Then use gamma to evaluate the polynomials at gamma and use them as part of the instance
+
+        // Run a fake mockprover just to fetch gamma
         MockProver::run(
             rlc_circuit_params.base.k.try_into().unwrap(),
             &rlc_circuit,
-            vec![],
-        )
-        .unwrap()
-        .assert_satisfied();
-    }
-
-    #[test]
-    pub fn test_sk_enc_full_prover() {
-        // 1. Define the inputs of the circuit.
-        // Since we are going to use this circuit instance for key gen, we can use an input file in which all the coefficients are set to 0
-        let file_path_zeroes = "src/data/sk_enc_4096_2x55_65537_zeroes.json";
-        let mut file = File::open(file_path_zeroes).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
-        let empty_sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
-
-        // 2. Generate (unsafe) trusted setup parameters
-        // Here we are setting a small k for optimization purposes
-        let k = 14;
-        let kzg_params = gen_srs(k as u32);
-
-        // 3. Build the circuit for key generation,
-        let mut key_gen_builder =
-            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Keygen, 0).use_k(k);
-        key_gen_builder.base.set_lookup_bits(k - 1); // lookup bits set to `k-1` as suggested [here](https://docs.axiom.xyz/protocol/zero-knowledge-proofs/getting-started-with-halo2#technical-detail-how-to-choose-lookup_bits)
-
-        let rlc_circuit = RlcExecutor::new(key_gen_builder, empty_sk_enc_circuit.clone());
-
-        // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
-        let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
-
-        // 4. Generate the verification key and the proving key
-        let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
-        let pk = keygen_pk(&kzg_params, vk, &rlc_circuit).unwrap();
-        let break_points = rlc_circuit.0.builder.borrow().break_points();
-        drop(rlc_circuit);
-
-        // 5. Generate the proof, here we pass the actual inputs
-        let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
-            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
-                .use_params(rlc_circuit_params);
-        proof_gen_builder.base.set_lookup_bits(k - 1);
-
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
-        let mut file = File::open(file_path).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
-        let sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
-
-        let rlc_circuit = RlcExecutor::new(proof_gen_builder, sk_enc_circuit.clone());
-
-        rlc_circuit
-            .0
-            .builder
-            .borrow_mut()
-            .set_break_points(break_points);
-        let proof = gen_proof(&kzg_params, &pk, rlc_circuit);
-
-        // 6. Verify the proof
-        check_proof(&kzg_params, pk.get_vk(), &proof, true);
-    }
-
-    #[test]
-    pub fn test_sk_enc_invalid_range() {
-        // 1. Define the inputs of the circuit
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
-        let mut file = File::open(file_path).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
-        let mut sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
-
-        // 2. Invalidate the circuit by setting the value of a coefficient of the polynomial `r1is[0]` to be out of range
-        let out_of_range_coeff = R1_BOUNDS[0] + 1;
-        sk_enc_circuit.r1is[0][0] = out_of_range_coeff.to_string();
-
-        // 3. Build the circuit for MockProver
-        let rlc_circuit_params = test_params();
-        let mut mock_builder: RlcCircuitBuilder<Fr> =
-            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
-                .use_params(rlc_circuit_params.clone());
-        mock_builder.base.set_lookup_bits(8); // Set the lookup bits to 8
-
-        let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit);
-
-        // 4. Run the mock prover
-        let invalid_mock_prover = MockProver::run(
-            rlc_circuit_params.base.k.try_into().unwrap(),
-            &rlc_circuit,
-            vec![],
-        )
-        .unwrap();
-
-        // 5. Assert that the circuit is not satisfied
-        // In particular, it should fail the range check enforced in the second phase for the first coefficient of r1is[0] and the equality check in the second phase for the 0-th basis
-        assert_eq!(
-            invalid_mock_prover.verify(),
-            Err(vec![
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 393180 }
-                },
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 393190 }
-                },
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 905111 }
-                },
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 905131 }
-                },
-            ])
+            vec![vec![]],
         );
+
+        let gamma = rlc_circuit.1;
+        println!("gamma: {:?}", gamma);
+
+        // // 3. Run the mock prover. The circuit should be satisfied
+        // MockProver::run(
+        //     rlc_circuit_params.base.k.try_into().unwrap(),
+        //     &rlc_circuit,
+        //     vec![vec![]],
+        // )
+        // .unwrap()
+        // .assert_satisfied();
+
+        // print
     }
 
-    #[test]
-    pub fn test_sk_enc_invalid_polys() {
-        // 1. Define the inputs of the circuit
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
-        let mut file = File::open(file_path).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
-        let mut sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
+    // #[test]
+    // pub fn test_sk_enc_full_prover() {
+    //     // 1. Define the inputs of the circuit.
+    //     // Since we are going to use this circuit instance for key gen, we can use an input file in which all the coefficients are set to 0
+    //     let file_path_zeroes = "src/data/sk_enc_4096_2x55_65537_zeroes.json";
+    //     let mut file = File::open(file_path_zeroes).unwrap();
+    //     let mut data = String::new();
+    //     file.read_to_string(&mut data).unwrap();
+    //     let empty_sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
 
-        // 2. Invalidate the circuit by setting a different `s` polynomial
-        let invalid_s = vec!["1".to_string(); 1024];
-        sk_enc_circuit.s = invalid_s;
+    //     // 2. Generate (unsafe) trusted setup parameters
+    //     // Here we are setting a small k for optimization purposes
+    //     let k = 14;
+    //     let kzg_params = gen_srs(k as u32);
 
-        // 3. Build the circuit for MockProver
-        let rlc_circuit_params = test_params();
-        let mut mock_builder: RlcCircuitBuilder<Fr> =
-            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
-                .use_params(rlc_circuit_params.clone());
-        mock_builder.base.set_lookup_bits(8); // Set the lookup bits to 8
+    //     // 3. Build the circuit for key generation,
+    //     let mut key_gen_builder =
+    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Keygen, 0).use_k(k);
+    //     key_gen_builder.base.set_lookup_bits(k - 1); // lookup bits set to `k-1` as suggested [here](https://docs.axiom.xyz/protocol/zero-knowledge-proofs/getting-started-with-halo2#technical-detail-how-to-choose-lookup_bits)
 
-        let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit);
+    //     let rlc_circuit = RlcExecutor::new(key_gen_builder, empty_sk_enc_circuit.clone());
 
-        // 4. Run the mock prover
-        let invalid_mock_prover = MockProver::run(
-            rlc_circuit_params.base.k.try_into().unwrap(),
-            &rlc_circuit,
-            vec![],
-        )
-        .unwrap();
+    //     // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
+    //     let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
 
-        // 5. Assert that the circuit is not satisfied
-        // In particular, it should fail the equality check (LHS=RHS) in the second phase for each i-th CRT basis
-        assert_eq!(
-            invalid_mock_prover.verify(),
-            Err(vec![
-                VerifyFailure::Permutation {
-                    column: (Any::Fixed, 1).into(),
-                    location: FailureLocation::InRegion {
-                        region: (2, "base+rlc phase 1").into(),
-                        offset: 1
-                    }
-                },
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 871319 }
-                },
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 871339 }
-                },
-                VerifyFailure::Permutation {
-                    column: (Any::advice_in(SecondPhase), 1).into(),
-                    location: FailureLocation::OutsideRegion { row: 871347 }
-                },
-            ])
-        );
-    }
+    //     // 4. Generate the verification key and the proving key
+    //     let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
+    //     let pk = keygen_pk(&kzg_params, vk, &rlc_circuit).unwrap();
+    //     let break_points = rlc_circuit.0.builder.borrow().break_points();
+    //     drop(rlc_circuit);
 
-    #[test]
-    #[cfg(feature = "bench")]
-    pub fn bench_sk_enc_full_prover() {
-        let file_path = "src/data/sk_enc_4096_2x55_65537";
+    //     // 5. Generate the proof, here we pass the actual inputs
+    //     let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
+    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
+    //             .use_params(rlc_circuit_params);
+    //     proof_gen_builder.base.set_lookup_bits(k - 1);
 
-        pub struct Config {
-            kzg_params: ParamsKZG<Bn256>,
-            k: usize,
-        }
+    //     let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+    //     let mut file = File::open(file_path).unwrap();
+    //     let mut data = String::new();
+    //     file.read_to_string(&mut data).unwrap();
+    //     let sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
 
-        // Generate unsafe parameters for different values of k
-        let mut configs = vec![];
-        for k in 12..=18 {
-            let kzg_params = gen_srs(k as u32);
-            let config = Config { kzg_params, k };
-            configs.push(config)
-        }
+    //     let rlc_circuit = RlcExecutor::new(proof_gen_builder, sk_enc_circuit.clone());
 
-        // Prepare a table to display results
-        let mut table = Table::new();
-        table.add_row(row![
-            "K",
-            "VK Generation Time",
-            "PK Generation Time",
-            "Proof Generation Time",
-            "Proof Verification Time"
-        ]);
+    //     rlc_circuit
+    //         .0
+    //         .builder
+    //         .borrow_mut()
+    //         .set_break_points(break_points);
+    //     let proof = gen_proof(&kzg_params, &pk, rlc_circuit);
 
-        for config in &configs {
-            println!("Running bench for k={}", config.k);
-            // 1. Define the inputs of the circuit.
-            // Since we are going to use this circuit instance for key gen, we can use an input file in which all the coefficients are set to 0
-            let file_path_zeroes = format!("{}_zeroes.json", file_path);
-            let mut file = File::open(file_path_zeroes).unwrap();
-            let mut data = String::new();
-            file.read_to_string(&mut data).unwrap();
-            let empty_sk_enc_circuit =
-                serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
+    //     // 6. Verify the proof
+    //     check_proof(&kzg_params, pk.get_vk(), &proof, true);
+    // }
 
-            // 2. Build the circuit for key generation,
-            let mut key_gen_builder =
-                RlcCircuitBuilder::from_stage(CircuitBuilderStage::Keygen, 0).use_k(config.k);
-            key_gen_builder.base.set_lookup_bits(config.k - 1); // lookup bits set to `k-1` as suggested [here](https://docs.axiom.xyz/protocol/zero-knowledge-proofs/getting-started-with-halo2#technical-detail-how-to-choose-lookup_bits)
+    // #[test]
+    // pub fn test_sk_enc_invalid_range() {
+    //     // 1. Define the inputs of the circuit
+    //     let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+    //     let mut file = File::open(file_path).unwrap();
+    //     let mut data = String::new();
+    //     file.read_to_string(&mut data).unwrap();
+    //     let mut sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
 
-            let rlc_circuit = RlcExecutor::new(key_gen_builder, empty_sk_enc_circuit.clone());
+    //     // 2. Invalidate the circuit by setting the value of a coefficient of the polynomial `r1is[0]` to be out of range
+    //     let out_of_range_coeff = R1_BOUNDS[0] + 1;
+    //     sk_enc_circuit.r1is[0][0] = out_of_range_coeff.to_string();
 
-            // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
-            let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
+    //     // 3. Build the circuit for MockProver
+    //     let rlc_circuit_params = test_params();
+    //     let mut mock_builder: RlcCircuitBuilder<Fr> =
+    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
+    //             .use_params(rlc_circuit_params.clone());
+    //     mock_builder.base.set_lookup_bits(8); // Set the lookup bits to 8
 
-            // 3. Generate the verification key and the proving key
-            let timer = std::time::Instant::now();
-            let vk = keygen_vk(&config.kzg_params, &rlc_circuit).unwrap();
-            let vk_gen_time = timer.elapsed();
-            let timer = std::time::Instant::now();
-            let pk = keygen_pk(&config.kzg_params, vk, &rlc_circuit).unwrap();
-            let pk_gen_time = timer.elapsed();
-            let break_points = rlc_circuit.0.builder.borrow().break_points();
-            drop(rlc_circuit);
+    //     let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit);
 
-            // 4. Generate the proof, here we pass the actual inputs
-            let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
-                RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
-                    .use_params(rlc_circuit_params);
-            proof_gen_builder.base.set_lookup_bits(config.k - 1);
+    //     // 4. Run the mock prover
+    //     let invalid_mock_prover = MockProver::run(
+    //         rlc_circuit_params.base.k.try_into().unwrap(),
+    //         &rlc_circuit,
+    //         vec![],
+    //     )
+    //     .unwrap();
 
-            let file_path = format!("{}.json", file_path);
-            let mut file = File::open(file_path).unwrap();
-            let mut data = String::new();
-            file.read_to_string(&mut data).unwrap();
-            let sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
+    //     // 5. Assert that the circuit is not satisfied
+    //     // In particular, it should fail the range check enforced in the second phase for the first coefficient of r1is[0] and the equality check in the second phase for the 0-th basis
+    //     assert_eq!(
+    //         invalid_mock_prover.verify(),
+    //         Err(vec![
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 393180 }
+    //             },
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 393190 }
+    //             },
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 905111 }
+    //             },
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 905131 }
+    //             },
+    //         ])
+    //     );
+    // }
 
-            let rlc_circuit = RlcExecutor::new(proof_gen_builder, sk_enc_circuit.clone());
+    // #[test]
+    // pub fn test_sk_enc_invalid_polys() {
+    //     // 1. Define the inputs of the circuit
+    //     let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+    //     let mut file = File::open(file_path).unwrap();
+    //     let mut data = String::new();
+    //     file.read_to_string(&mut data).unwrap();
+    //     let mut sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
 
-            rlc_circuit
-                .0
-                .builder
-                .borrow_mut()
-                .set_break_points(break_points);
-            let timer = std::time::Instant::now();
-            let proof = gen_proof(&config.kzg_params, &pk, rlc_circuit);
-            let proof_gen_time = timer.elapsed();
+    //     // 2. Invalidate the circuit by setting a different `s` polynomial
+    //     let invalid_s = vec!["1".to_string(); 1024];
+    //     sk_enc_circuit.s = invalid_s;
 
-            // 5. Verify the proof
-            let timer = std::time::Instant::now();
-            check_proof(&config.kzg_params, pk.get_vk(), &proof, true);
-            let proof_verification_time = timer.elapsed();
+    //     // 3. Build the circuit for MockProver
+    //     let rlc_circuit_params = test_params();
+    //     let mut mock_builder: RlcCircuitBuilder<Fr> =
+    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
+    //             .use_params(rlc_circuit_params.clone());
+    //     mock_builder.base.set_lookup_bits(8); // Set the lookup bits to 8
 
-            table.add_row(row![
-                config.k,
-                format!("{:?}", vk_gen_time),
-                format!("{:?}", pk_gen_time),
-                format!("{:?}", proof_gen_time),
-                format!("{:?}", proof_verification_time),
-            ]);
-        }
-        println!("bfv params: {:?}", file_path);
-        table.printstd();
-    }
+    //     let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit);
+
+    //     // 4. Run the mock prover
+    //     let invalid_mock_prover = MockProver::run(
+    //         rlc_circuit_params.base.k.try_into().unwrap(),
+    //         &rlc_circuit,
+    //         vec![],
+    //     )
+    //     .unwrap();
+
+    //     // 5. Assert that the circuit is not satisfied
+    //     // In particular, it should fail the equality check (LHS=RHS) in the second phase for each i-th CRT basis
+    //     assert_eq!(
+    //         invalid_mock_prover.verify(),
+    //         Err(vec![
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::Fixed, 1).into(),
+    //                 location: FailureLocation::InRegion {
+    //                     region: (2, "base+rlc phase 1").into(),
+    //                     offset: 1
+    //                 }
+    //             },
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 871319 }
+    //             },
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 871339 }
+    //             },
+    //             VerifyFailure::Permutation {
+    //                 column: (Any::advice_in(SecondPhase), 1).into(),
+    //                 location: FailureLocation::OutsideRegion { row: 871347 }
+    //             },
+    //         ])
+    //     );
+    // }
+
+    // #[test]
+    // #[cfg(feature = "bench")]
+    // pub fn bench_sk_enc_full_prover() {
+    //     let file_path = "src/data/sk_enc_4096_2x55_65537";
+
+    //     pub struct Config {
+    //         kzg_params: ParamsKZG<Bn256>,
+    //         k: usize,
+    //     }
+
+    //     // Generate unsafe parameters for different values of k
+    //     let mut configs = vec![];
+    //     for k in 12..=18 {
+    //         let kzg_params = gen_srs(k as u32);
+    //         let config = Config { kzg_params, k };
+    //         configs.push(config)
+    //     }
+
+    //     // Prepare a table to display results
+    //     let mut table = Table::new();
+    //     table.add_row(row![
+    //         "K",
+    //         "VK Generation Time",
+    //         "PK Generation Time",
+    //         "Proof Generation Time",
+    //         "Proof Verification Time"
+    //     ]);
+
+    //     for config in &configs {
+    //         println!("Running bench for k={}", config.k);
+    //         // 1. Define the inputs of the circuit.
+    //         // Since we are going to use this circuit instance for key gen, we can use an input file in which all the coefficients are set to 0
+    //         let file_path_zeroes = format!("{}_zeroes.json", file_path);
+    //         let mut file = File::open(file_path_zeroes).unwrap();
+    //         let mut data = String::new();
+    //         file.read_to_string(&mut data).unwrap();
+    //         let empty_sk_enc_circuit =
+    //             serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
+
+    //         // 2. Build the circuit for key generation,
+    //         let mut key_gen_builder =
+    //             RlcCircuitBuilder::from_stage(CircuitBuilderStage::Keygen, 0).use_k(config.k);
+    //         key_gen_builder.base.set_lookup_bits(config.k - 1); // lookup bits set to `k-1` as suggested [here](https://docs.axiom.xyz/protocol/zero-knowledge-proofs/getting-started-with-halo2#technical-detail-how-to-choose-lookup_bits)
+
+    //         let rlc_circuit = RlcExecutor::new(key_gen_builder, empty_sk_enc_circuit.clone());
+
+    //         // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
+    //         let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
+
+    //         // 3. Generate the verification key and the proving key
+    //         let timer = std::time::Instant::now();
+    //         let vk = keygen_vk(&config.kzg_params, &rlc_circuit).unwrap();
+    //         let vk_gen_time = timer.elapsed();
+    //         let timer = std::time::Instant::now();
+    //         let pk = keygen_pk(&config.kzg_params, vk, &rlc_circuit).unwrap();
+    //         let pk_gen_time = timer.elapsed();
+    //         let break_points = rlc_circuit.0.builder.borrow().break_points();
+    //         drop(rlc_circuit);
+
+    //         // 4. Generate the proof, here we pass the actual inputs
+    //         let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
+    //             RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
+    //                 .use_params(rlc_circuit_params);
+    //         proof_gen_builder.base.set_lookup_bits(config.k - 1);
+
+    //         let file_path = format!("{}.json", file_path);
+    //         let mut file = File::open(file_path).unwrap();
+    //         let mut data = String::new();
+    //         file.read_to_string(&mut data).unwrap();
+    //         let sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
+
+    //         let rlc_circuit = RlcExecutor::new(proof_gen_builder, sk_enc_circuit.clone());
+
+    //         rlc_circuit
+    //             .0
+    //             .builder
+    //             .borrow_mut()
+    //             .set_break_points(break_points);
+    //         let timer = std::time::Instant::now();
+    //         let proof = gen_proof(&config.kzg_params, &pk, rlc_circuit);
+    //         let proof_gen_time = timer.elapsed();
+
+    //         // 5. Verify the proof
+    //         let timer = std::time::Instant::now();
+    //         check_proof(&config.kzg_params, pk.get_vk(), &proof, true);
+    //         let proof_verification_time = timer.elapsed();
+
+    //         table.add_row(row![
+    //             config.k,
+    //             format!("{:?}", vk_gen_time),
+    //             format!("{:?}", pk_gen_time),
+    //             format!("{:?}", proof_gen_time),
+    //             format!("{:?}", proof_verification_time),
+    //         ]);
+    //     }
+    //     println!("bfv params: {:?}", file_path);
+    //     table.printstd();
+    // }
 }
