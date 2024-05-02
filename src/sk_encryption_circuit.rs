@@ -165,7 +165,7 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             ct0is,
         } = payload;
 
-        // let mut public_inputs = vec![];
+        let mut public_inputs = vec![];
 
         // ASSIGNMENT
 
@@ -193,15 +193,11 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
 
             let k0i_constant = Constant(F::from_str_vartime(K0IS[z]).unwrap());
             k0i_constants.push(k0i_constant);
-
-            println!("ct0i_at_gamma: {:?}", ct0i_at_gamma_assigned);
         }
 
         // cyclo poly is equal to x^N + 1
         let cyclo_at_gamma = gamma.pow_vartime([N as u64]) + F::from(1);
         let cyclo_at_gamma_assigned = ctx_gate.load_witness(cyclo_at_gamma);
-
-        println!("cyclo_at_gamma: {:?}", cyclo_at_gamma_assigned);
 
         // RANGE CHECK
         s_assigned.range_check(ctx_gate, range, S_BOUND);
@@ -248,12 +244,11 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             gate.assert_is_const(ctx_gate, &res, &F::from(1));
         }
 
-        // // EXPOSE PUBLIC INPUTS
-        // public_inputs.push(cyclo_at_gamma_assigned);
-        // // public_inputs.extend(ais_at_gamma_assigned.iter().cloned());
-        // public_inputs.extend(ct0is_at_gamma_assigned.iter().cloned());
-
-        // builder.base.assigned_instances[0] = public_inputs;
+        // EXPOSE PUBLIC INPUTS
+        public_inputs.push(cyclo_at_gamma_assigned);
+        public_inputs.extend(ais_at_gamma_assigned.iter().cloned());
+        public_inputs.extend(ct0is_at_gamma_assigned.iter().cloned());
+        builder.base.assigned_instances[0] = public_inputs;
     }
 }
 
@@ -262,7 +257,8 @@ mod test {
 
     use super::test_params;
     use crate::{
-        constants::sk_enc_constants_4096_2x55_65537::R1_BOUNDS,
+        constants::sk_enc_constants_4096_2x55_65537::{N, R1_BOUNDS},
+        poly::Poly,
         sk_encryption_circuit::BfvSkEncryptionCircuit,
     };
     use axiom_eth::{
@@ -285,10 +281,11 @@ mod test {
         },
         utils::{
             fs::gen_srs,
-            testing::{check_proof, gen_proof},
+            testing::{check_proof_with_instances, gen_proof_with_instances},
         },
         AssignedValue,
     };
+    use itertools::Itertools;
     use std::{fs::File, io::Read};
 
     #[cfg(feature = "bench")]
@@ -314,37 +311,57 @@ mod test {
                 .use_params(rlc_circuit_params.clone());
         mock_builder.base.set_lookup_bits(8);
 
-        let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit);
+        let rlc_circuit = RlcExecutor::new(mock_builder, sk_enc_circuit.clone());
 
-        // println!("instances: {:?}", instances);
-        // Here, it has not extracted the challenge yet!
-        // Indeed, the challenge is equal to 0 here.
-        // Syntesize hasn't been called yet!
-        // Then, as soon as the mock prover is called. The circuit is actually properly called!
-
-        // Run synstesize first to fetch the value of gamma
-        // Then use gamma to evaluate the polynomials at gamma and use them as part of the instance
-
-        // Run a fake mockprover just to fetch gamma
-        MockProver::run(
+        // 3. Run a "dummy" MockProver just to fetch gamma
+        // This is a workaround to call `synthesize` which will run through the two-phases witness and fetch the challenge `gamma` and store it in the circuit
+        let _ = MockProver::run(
             rlc_circuit_params.base.k.try_into().unwrap(),
             &rlc_circuit,
             vec![vec![]],
         );
+        let gamma = &rlc_circuit.1.borrow().unwrap();
 
-        let gamma = rlc_circuit.1;
-        println!("gamma: {:?}", gamma);
+        // Now that we have the gamma, it can be used to generate the public inputs to verify the proof against
+        // Create a vector of strings to store the coefficients of the cyclo polynomial.
+        // The cyclo polynomial is equal to x^N + 1
+        let mut cyclo = vec![String::from("0"); N];
+        cyclo.push(String::from("1"));
+        cyclo[0] = String::from("1");
+        let cyclo_poly = Poly::<Fr>::new(cyclo);
+        let cyclo_at_gamma = cyclo_poly.eval(*gamma);
 
-        // // 3. Run the mock prover. The circuit should be satisfied
-        // MockProver::run(
-        //     rlc_circuit_params.base.k.try_into().unwrap(),
-        //     &rlc_circuit,
-        //     vec![vec![]],
-        // )
-        // .unwrap()
-        // .assert_satisfied();
+        let ais_at_gamma: Vec<Fr> = sk_enc_circuit
+            .ais
+            .iter()
+            .map(|ai_coeffs| {
+                let ai_poly = Poly::<Fr>::new(ai_coeffs.clone());
+                ai_poly.eval(*gamma)
+            })
+            .collect();
 
-        // print
+        let ct0is_at_gamma: Vec<Fr> = sk_enc_circuit
+            .ct0is
+            .iter()
+            .map(|ct0i_coeffs| {
+                let ct0i_poly = Poly::<Fr>::new(ct0i_coeffs.clone());
+                ct0i_poly.eval(*gamma)
+            })
+            .collect();
+
+        // Collect the public inputs into a single vector
+        let mut public_inputs = vec![cyclo_at_gamma];
+        public_inputs.extend(ais_at_gamma);
+        public_inputs.extend(ct0is_at_gamma);
+
+        // 4. Run the mock prover. The circuit should be satisfied
+        MockProver::run(
+            rlc_circuit_params.base.k.try_into().unwrap(),
+            &rlc_circuit,
+            vec![public_inputs],
+        )
+        .unwrap()
+        .assert_satisfied();
     }
 
     // #[test]
@@ -366,41 +383,83 @@ mod test {
     //     let mut key_gen_builder =
     //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Keygen, 0).use_k(k);
     //     key_gen_builder.base.set_lookup_bits(k - 1); // lookup bits set to `k-1` as suggested [here](https://docs.axiom.xyz/protocol/zero-knowledge-proofs/getting-started-with-halo2#technical-detail-how-to-choose-lookup_bits)
+    //     key_gen_builder.base.set_instance_columns(1);
 
     //     let rlc_circuit = RlcExecutor::new(key_gen_builder, empty_sk_enc_circuit.clone());
 
     //     // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
     //     let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
 
-    //     // 4. Generate the verification key and the proving key
-    //     let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
-    //     let pk = keygen_pk(&kzg_params, vk, &rlc_circuit).unwrap();
-    //     let break_points = rlc_circuit.0.builder.borrow().break_points();
-    //     drop(rlc_circuit);
-
-    //     // 5. Generate the proof, here we pass the actual inputs
-    //     let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
-    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
-    //             .use_params(rlc_circuit_params);
-    //     proof_gen_builder.base.set_lookup_bits(k - 1);
+    //     // 4. Run a dummy MockProver to generate the challenge `gamma`
+    //     let mock_builder: RlcCircuitBuilder<Fr> =
+    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
+    //             .use_params(rlc_circuit_params.clone());
 
     //     let file_path = "src/data/sk_enc_4096_2x55_65537.json";
     //     let mut file = File::open(file_path).unwrap();
     //     let mut data = String::new();
     //     file.read_to_string(&mut data).unwrap();
     //     let sk_enc_circuit = serde_json::from_str::<BfvSkEncryptionCircuit>(&data).unwrap();
+    //     let rlc_circuit_mock = RlcExecutor::new(mock_builder, sk_enc_circuit.clone());
+
+    //     let _ = MockProver::run(k.try_into().unwrap(), &rlc_circuit_mock, vec![vec![]]);
+    //     let gamma = &rlc_circuit_mock.1.borrow().unwrap();
+
+    //     // 5. Generate the verification key and the proving key
+    //     let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
+    //     let pk = keygen_pk(&kzg_params, vk, &rlc_circuit).unwrap();
+    //     let break_points = rlc_circuit.0.builder.borrow().break_points();
+    //     drop(rlc_circuit);
+
+    //     // 6. Generate the proof, here we pass the actual inputs
+    //     let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
+    //         RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
+    //             .use_params(rlc_circuit_params);
 
     //     let rlc_circuit = RlcExecutor::new(proof_gen_builder, sk_enc_circuit.clone());
 
-    //     rlc_circuit
-    //         .0
-    //         .builder
-    //         .borrow_mut()
-    //         .set_break_points(break_points);
-    //     let proof = gen_proof(&kzg_params, &pk, rlc_circuit);
+    // // Collect the public inputs into a single vector
+    // let mut cyclo = vec![String::from("0"); N];
+    // cyclo.push(String::from("1"));
+    // cyclo[0] = String::from("1");
+    // let cyclo_poly = Poly::<Fr>::new(cyclo);
+    // let cyclo_at_gamma = cyclo_poly.eval(*gamma);
 
-    //     // 6. Verify the proof
-    //     check_proof(&kzg_params, pk.get_vk(), &proof, true);
+    // let ais_at_gamma: Vec<Fr> = sk_enc_circuit
+    //     .ais
+    //     .iter()
+    //     .map(|ai_coeffs| {
+    //         let ai_poly = Poly::<Fr>::new(ai_coeffs.clone());
+    //         ai_poly.eval(*gamma)
+    //     })
+    //     .collect();
+
+    // let ct0is_at_gamma: Vec<Fr> = sk_enc_circuit
+    //     .ct0is
+    //     .iter()
+    //     .map(|ct0i_coeffs| {
+    //         let ct0i_poly = Poly::<Fr>::new(ct0i_coeffs.clone());
+    //         ct0i_poly.eval(*gamma)
+    //     })
+    //     .collect();
+    // let mut public_inputs = vec![cyclo_at_gamma];
+    // public_inputs.extend(ais_at_gamma);
+    // public_inputs.extend(ct0is_at_gamma);
+
+    // let public_inputs = vec![Fr::from(1)];
+
+    // let instances = vec![public_inputs];
+
+    // rlc_circuit
+    //     .0
+    //     .builder
+    //     .borrow_mut()
+    //     .set_break_points(break_points);
+
+    // let proof = gen_proof_with_instances(&kzg_params, &pk, rlc_circuit, &[&instances[0]]);
+
+    // // 6. Verify the proof
+    // check_proof_with_instances(&kzg_params, pk.get_vk(), &proof, &[&instances[0]], true);
     // }
 
     // #[test]
