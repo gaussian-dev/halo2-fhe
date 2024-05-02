@@ -144,7 +144,6 @@ def main(args):
 
     # initiate counters for the number of advice cells needed for each constraint phase
     phase_0_assignment_advice_cell_count = 0
-    phase_1_assignment_advice_cell_count = 0
     phase_1_range_check_advice_cell_count = 0
     phase_1_eval_at_gamma_constraint_advice_cell_count = 0
     phase_1_encryption_constraint_advice_cell_count = 0
@@ -164,6 +163,8 @@ def main(args):
 
     r1is_assigned = []
     r2is_assigned = []
+    ais_assigned = []
+    ct0is_assigned = []
 
     for i in range(len(ctis)):
         r1i_assigned = assign_to_circuit(r1is[i], p)
@@ -174,41 +175,44 @@ def main(args):
         phase_0_assignment_advice_cell_count += len(r1i_assigned.coefficients)
         phase_0_assignment_advice_cell_count += len(r2i_assigned.coefficients)
 
+        ai_assigned = assign_to_circuit(ais[i], p)
+        ct0i_assigned = assign_to_circuit(ct0is[i], p)
+        ais_assigned.append(ai_assigned)
+        ct0is_assigned.append(ct0i_assigned)
+
+        phase_0_assignment_advice_cell_count += len(ai_assigned.coefficients)
+        phase_0_assignment_advice_cell_count += len(ct0i_assigned.coefficients)
+
     # For the sake of simplicity, we generate a random challenge here
     gamma = randint(0, 1000)
 
     '''
-    CIRCUIT - PHASE 1 - ASSIGNMENT
+    CIRCUIT - PHASE 1
     '''
 
     # Every assigned value must be an element of the field Zp. Negative coefficients `-z` are assigned as `p - z`
-    ais_at_gamma_assigned = []
-    ct0is_at_gamma_assigned = []
+    # ais_at_gamma_assigned = []
+    # ct0is_at_gamma_assigned = []
     qi_constants = []
     k0i_constants = []
 
     for i in range(len(ctis)):
-        ai_at_gamma = ais[i].evaluate(gamma)
-        ai_at_gamma_assigned = assign_to_circuit(Polynomial([ai_at_gamma]), p).coefficients[0]
-        ais_at_gamma_assigned.append(ai_at_gamma_assigned)
+        # ai_at_gamma = ais[i].evaluate(gamma)
+        # ai_at_gamma_assigned = assign_to_circuit(Polynomial([ai_at_gamma]), p).coefficients[0]
+        # ais_at_gamma_assigned.append(ai_at_gamma_assigned)
 
-        phase_1_assignment_advice_cell_count += 1
+        # phase_1_assignment_advice_cell_count += 1
 
-        ct0i_at_gamma = ctis[i][0].evaluate(gamma)
-        ct0i_at_gamma_assigned = assign_to_circuit(Polynomial([ct0i_at_gamma]), p).coefficients[0]
-        ct0is_at_gamma_assigned.append(ct0i_at_gamma_assigned)
+        # ct0i_at_gamma = ctis[i][0].evaluate(gamma)
+        # ct0i_at_gamma_assigned = assign_to_circuit(Polynomial([ct0i_at_gamma]), p).coefficients[0]
+        # ct0is_at_gamma_assigned.append(ct0i_at_gamma_assigned)
 
-        phase_1_assignment_advice_cell_count += 1
+        # phase_1_assignment_advice_cell_count += 1
 
         qi_constants.append(qis[i])
 
         k0i_constant = assign_to_circuit(Polynomial([k0is[i]]), p).coefficients[0]
         k0i_constants.append(k0i_constant)
-
-    cyclo_at_gamma = cyclo.evaluate(gamma)
-    cyclo_at_gamma_assigned = assign_to_circuit(Polynomial([cyclo_at_gamma]), p).coefficients[0]
-
-    phase_1_assignment_advice_cell_count += 1
 
     '''
     CIRCUIT - PHASE 1 - RANGE CHECK
@@ -257,6 +261,16 @@ def main(args):
 
     k1_at_gamma_assigned = k1_assigned.evaluate(gamma)
     phase_1_eval_at_gamma_constraint_advice_cell_count += len(k1_assigned.coefficients) * 2 - 1
+
+    cyclo_at_gamma = cyclo.evaluate(gamma)
+    cyclo_at_gamma_assigned = assign_to_circuit(Polynomial([cyclo_at_gamma]), p).coefficients[0]
+    n_bits_N = n.bit_length()
+
+    # This corresponds to `load_rlc_cache`
+    phase_1_eval_at_gamma_constraint_advice_cell_count += (n_bits_N - 1) * 4
+    # This corresponds to `add`
+    phase_1_eval_at_gamma_constraint_advice_cell_count += 4
+
 
     for i in range(len(ctis)):
         # sanity check. The coefficients of ct0i should be in the range [-(qi-1)/2, (qi-1)/2]
@@ -337,12 +351,15 @@ def main(args):
         phase_1_eval_at_gamma_constraint_advice_cell_count += len(r1is_assigned[i].coefficients) * 2 - 1
         phase_1_eval_at_gamma_constraint_advice_cell_count += len(r2is_assigned[i].coefficients) * 2 - 1
 
+        ai_gamma_assigned = ais_assigned[i].evaluate(gamma)
+        ct0i_gamma_assigned = ct0is_assigned[i].evaluate(gamma)
+
         '''
         CIRCUIT - PHASE 1 - CORRECT ENCRYPTION CONSTRAINT
         '''
 
-        lhs = ct0is_at_gamma_assigned[i]
-        rhs = (ais_at_gamma_assigned[i] * s_at_gamma_assigned + e_at_gamma_assigned + (k1_at_gamma_assigned * k0i_constants[i]) + (r1i_gamma_assigned * qi_constants[i]) + (r2i_gamma_assigned * cyclo_at_gamma_assigned))
+        lhs = ct0i_gamma_assigned
+        rhs = (ai_gamma_assigned * s_at_gamma_assigned + e_at_gamma_assigned + (k1_at_gamma_assigned * k0i_constants[i]) + (r1i_gamma_assigned * qi_constants[i]) + (r2i_gamma_assigned * cyclo_at_gamma_assigned))
         phase_1_encryption_constraint_advice_cell_count += 16
 
         assert lhs % p == rhs % p
@@ -355,22 +372,20 @@ def main(args):
         cyclo_at_gamma_assigned_expected = assign_to_circuit(Polynomial([cyclo_at_gamma]), p).coefficients[0]
         assert cyclo_at_gamma_assigned == cyclo_at_gamma_assigned_expected
 
-        ai_gamma = ais[i].evaluate(gamma)
-        ai_gamma_assigned_expected = assign_to_circuit(Polynomial([ai_gamma]), p).coefficients[0]
-        assert ais_at_gamma_assigned[i] == ai_gamma_assigned_expected
+        ai_gamma_assigned_expected = ais_assigned[i].evaluate(gamma)
+        assert ai_gamma_assigned == ai_gamma_assigned_expected
 
-        ct0i_gamma = ctis[i][0].evaluate(gamma)
-        ct0i_gamma_assigned_expected = assign_to_circuit(Polynomial([ct0i_gamma]), p).coefficients[0]
-        assert ct0is_at_gamma_assigned[i] == ct0i_gamma_assigned_expected
+        ct0i_gamma_assigned_expected = ct0is_assigned[i].evaluate(gamma)
+        assert ct0i_gamma_assigned == ct0i_gamma_assigned_expected
 
         assert qis[i] == qi_constants[i]
 
         k0i_assigned_expected = assign_to_circuit(Polynomial([k0is[i]]), p).coefficients[0]
         assert k0i_constants[i] == k0i_assigned_expected
 
-    total_advice_cell_count = phase_0_assignment_advice_cell_count + phase_1_assignment_advice_cell_count + phase_1_range_check_advice_cell_count + phase_1_eval_at_gamma_constraint_advice_cell_count + phase_1_encryption_constraint_advice_cell_count
+    total_advice_cell_count = phase_0_assignment_advice_cell_count + phase_1_range_check_advice_cell_count + phase_1_eval_at_gamma_constraint_advice_cell_count + phase_1_encryption_constraint_advice_cell_count
 
-    print_advice_cells_info(total_advice_cell_count, phase_0_assignment_advice_cell_count, phase_1_assignment_advice_cell_count, phase_1_range_check_advice_cell_count, phase_1_eval_at_gamma_constraint_advice_cell_count, phase_1_encryption_constraint_advice_cell_count)
+    print_advice_cells_info(total_advice_cell_count, phase_0_assignment_advice_cell_count, phase_1_range_check_advice_cell_count, phase_1_eval_at_gamma_constraint_advice_cell_count, phase_1_encryption_constraint_advice_cell_count)
     # ais and ct0is need to be parsed such that their coefficients are in the range [0, p - 1]
     # we don't call them assigned because they are never assigned to the circuit
     ais_in_p = [assign_to_circuit(ai, p) for ai in ais]

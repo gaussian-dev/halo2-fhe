@@ -69,7 +69,7 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
     /// In this phase, the polynomials for each matrix $S_i$ are assigned to the circuit. Namely:
     /// * polynomials `s`, `e`, `k1` are assigned to the witness table. This has to be done only once as these polynomial are common to each $S_i$ matrix
     /// * polynomials `r1i`, `r2i` are assigned to the witness table for each $S_i$ matrix
-    /// * polynomials `ai`, `ct0i` are assigned to the witness table for each $S_i$ matrix
+    /// * polynomials `ai`, `ct0i` are assigned to the witness table for each $S_i$ matrix and exposed as public inputs
 
     /// Witness values are element of the finite field $\mod{p}$. Negative coefficients $-z$ are assigned as field elements $p - z$.
 
@@ -145,14 +145,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
     /// - The coefficients of $S_i$ are in the expected range.  
     /// - $U_i(\gamma) \times S_i(\gamma) =Ct_{0,i}(\gamma)$
 
-    /// ##### Assignment
-    /// * Assign evaluations to the circuit: `ai(gamma)`, `ct0i(gamma)` for each $U_i$ matrix
-    /// * Assign `cyclo(gamma)` to the circuit. This has to be done only once as the cyclotomic polynomial is common to each $U_i$ matrix
-    /// * Expose `ai(gamma)`, `ct0i(gamma)` for each $U_i$ matrix
-    /// * Expose `cyclo(gamma)` as public input
-
-    /// Since the polynomials `cyclo`, `ai` and `ct0i` are known to the verifier, the evaluation at $\gamma$ doesn't need to be constrained inside the circuit. Instead, this can be safely be performed (and verified) outside the circuit.
-
     /// ##### Range Check
 
     /// The coefficients of the private polynomials from each $i$-th matrix $S_i$ are checked to be in the correct range
@@ -163,10 +155,10 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
 
     /// ##### Evaluation at $\gamma$ Constraint
 
-    /// Contrary to the polynomials `cyclo`, `ai` and `ct0i`, the polynomials belonging to each $S_i$ matrix  are not known by the verifier. Therefore, their evaluation at $\gamma$ must be constrained inside the circuit.
-
     /// * Constrain the evaluation of the polynomials `s`, `e`, `k1` at $\gamma$. This has to be done only once as these polynomial are common to each $S_i$ matrix
     /// * Constrain the evaluation of the polynomials `r1i`, `r2i` at $\gamma$ for each $S_i$ matrix
+    /// * Constrain the evaluation of the polynomials `ai` and `ct0i` at $\gamma$ for each $U_i$ matrix
+    /// * Constrain the evaluation of the polynomials `cyclo` at $\gamma$ . This has to be done only once as the cyclotomic polynomial is common to each $U_i$ matrix
 
     /// ##### Correct Encryption Constraint
 
@@ -204,12 +196,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             k0i_constants.push(k0i_constant);
         }
 
-        let bits_used = usize::BITS as usize - N.leading_zeros() as usize;
-        rlc.load_rlc_cache((ctx_gate, ctx_rlc), gate, bits_used);
-        let cyclo_at_gamma_assigned = rlc.rlc_pow_fixed(ctx_gate, gate, N);
-        let cyclo_at_gamma_assigned =
-            gate.add(ctx_gate, cyclo_at_gamma_assigned, Constant(F::from(1)));
-
         s_assigned.range_check(ctx_gate, range, S_BOUND);
         e_assigned.range_check(ctx_gate, range, E_BOUND);
         k1_assigned.range_check(ctx_gate, range, K1_BOUND);
@@ -220,6 +206,12 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
         }
 
         // EVALUATION AT GAMMA CONSTRAINT
+
+        let bits_used = usize::BITS as usize - N.leading_zeros() as usize;
+        rlc.load_rlc_cache((ctx_gate, ctx_rlc), gate, bits_used);
+        let cyclo_at_gamma_assigned = rlc.rlc_pow_fixed(ctx_gate, gate, N);
+        let cyclo_at_gamma_assigned =
+            gate.add(ctx_gate, cyclo_at_gamma_assigned, Constant(F::from(1)));
 
         let s_at_gamma = s_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
         let e_at_gamma = e_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
