@@ -191,13 +191,12 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
         } = payload;
 
         let (ctx_gate, ctx_rlc) = builder.rlc_ctx_pair();
-        let gamma = *rlc.gamma();
+        let gate = range.gate();
 
         let mut qi_constants = vec![];
         let mut k0i_constants = vec![];
 
         for z in 0..ct0is_assigned.len() {
-
             let qi_constant = Constant(F::from_str_vartime(QIS[z]).unwrap());
             qi_constants.push(qi_constant);
 
@@ -205,11 +204,12 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             k0i_constants.push(k0i_constant);
         }
 
-        // cyclo poly is equal to x^N + 1
-        let cyclo_at_gamma = gamma.pow_vartime([N as u64]) + F::from(1);
-        let cyclo_at_gamma_assigned = ctx_gate.load_witness(cyclo_at_gamma);
+        let bits_used = usize::BITS as usize - N.leading_zeros() as usize;
+        rlc.load_rlc_cache((ctx_gate, ctx_rlc), gate, bits_used);
+        let cyclo_at_gamma_assigned = rlc.rlc_pow_fixed(ctx_gate, gate, N);
+        let cyclo_at_gamma_assigned =
+            gate.add(ctx_gate, cyclo_at_gamma_assigned, Constant(F::from(1)));
 
-        // RANGE CHECK
         s_assigned.range_check(ctx_gate, range, S_BOUND);
         e_assigned.range_check(ctx_gate, range, E_BOUND);
         k1_assigned.range_check(ctx_gate, range, K1_BOUND);
@@ -224,8 +224,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
         let s_at_gamma = s_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
         let e_at_gamma = e_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
         let k1_at_gamma = k1_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
-
-        let gate = range.gate();
 
         // For each `i` Prove that LHS(gamma) = RHS(gamma)
         // LHS = ct0i(gamma)
