@@ -190,24 +190,13 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             ct0is_assigned,
         } = payload;
 
-        // ASSIGNMENT
-
         let (ctx_gate, ctx_rlc) = builder.rlc_ctx_pair();
         let gamma = *rlc.gamma();
 
-        let mut ais_at_gamma_assigned = vec![];
-        let mut ct0is_at_gamma_assigned = vec![];
         let mut qi_constants = vec![];
         let mut k0i_constants = vec![];
 
         for z in 0..ct0is_assigned.len() {
-            let ai_assigned = &ais_assigned[z];
-            let ai_at_gamma_assigned = ai_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
-            ais_at_gamma_assigned.push(ai_at_gamma_assigned);
-
-            let ct0i_assigned = &ct0is_assigned[z];
-            let ct0i_at_gamma_assigned = ct0i_assigned.enforce_eval_at_gamma(ctx_rlc, rlc);
-            ct0is_at_gamma_assigned.push(ct0i_at_gamma_assigned);
 
             let qi_constant = Constant(F::from_str_vartime(QIS[z]).unwrap());
             qi_constants.push(qi_constant);
@@ -244,11 +233,13 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
         for z in 0..ct0is_assigned.len() {
             let r1i_at_gamma = r1is_assigned[z].enforce_eval_at_gamma(ctx_rlc, rlc);
             let r2i_at_gamma = r2is_assigned[z].enforce_eval_at_gamma(ctx_rlc, rlc);
+            let ai_at_gamma = ais_assigned[z].enforce_eval_at_gamma(ctx_rlc, rlc);
+            let ct0i_at_gamma = ct0is_assigned[z].enforce_eval_at_gamma(ctx_rlc, rlc);
 
             // CORRECT ENCRYPTION CONSTRAINT
 
             // rhs = ai(gamma) * s(gamma) + e(gamma)
-            let rhs = gate.mul_add(ctx_gate, ais_at_gamma_assigned[z], s_at_gamma, e_at_gamma);
+            let rhs = gate.mul_add(ctx_gate, ai_at_gamma, s_at_gamma, e_at_gamma);
 
             // rhs = rhs + k1(gamma) * k0i
             let rhs = gate.mul_add(ctx_gate, k1_at_gamma, k0i_constants[z], rhs);
@@ -258,7 +249,7 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
 
             // rhs = rhs + r2i(gamma) * cyclo(gamma)
             let rhs = gate.mul_add(ctx_gate, r2i_at_gamma, cyclo_at_gamma_assigned, rhs);
-            let lhs = ct0is_at_gamma_assigned[z];
+            let lhs = ct0i_at_gamma;
 
             // LHS(gamma) = RHS(gamma)
             let res = gate.is_equal(ctx_gate, lhs, rhs);
