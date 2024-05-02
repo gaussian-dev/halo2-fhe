@@ -271,7 +271,6 @@ def main(args):
     # This corresponds to `add`
     phase_1_eval_at_gamma_constraint_advice_cell_count += 4
 
-
     for i in range(len(ctis)):
         # sanity check. The coefficients of ct0i should be in the range [-(qi-1)/2, (qi-1)/2]
         bound = int((qis[i] - 1) / 2)
@@ -353,6 +352,9 @@ def main(args):
 
         ai_gamma_assigned = ais_assigned[i].evaluate(gamma)
         ct0i_gamma_assigned = ct0is_assigned[i].evaluate(gamma)
+
+        phase_1_eval_at_gamma_constraint_advice_cell_count += len(ais_assigned[i].coefficients) * 2 - 1
+        phase_1_eval_at_gamma_constraint_advice_cell_count += len(ct0is_assigned[i].coefficients) * 2 - 1
 
         '''
         CIRCUIT - PHASE 1 - CORRECT ENCRYPTION CONSTRAINT
