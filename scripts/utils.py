@@ -27,7 +27,7 @@ def count_advice_cells_needed_for_poly_range_check(poly: Polynomial, bound: int,
 
     count = 0
 
-    # 4 advice cells for each coefficient needed for the shift addition operation
+    # 4 advice cells for each coefficient needed for the shift addition operation``
     count += 4 * len(poly.coefficients)
 
     # further advice cells for range check inside `check_less_than_safe`

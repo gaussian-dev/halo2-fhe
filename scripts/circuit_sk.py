@@ -1,6 +1,7 @@
 import os
 from bfv.crt import CRTModuli
 from bfv.bfv import BFVCrt
+from bfv.bfv import BFV
 from bfv.discrete_gauss import DiscreteGaussian
 from bfv.polynomial import Polynomial, poly_div
 from random import randint
@@ -8,6 +9,10 @@ import copy
 from utils import assign_to_circuit, count_advice_cells_needed_for_poly_range_check, print_advice_cells_info
 import argparse
 import json
+import numpy as np
+
+
+
 
 def main(args): 
     
@@ -36,9 +41,9 @@ def main(args):
 
     ctis = bfv_crt.SecretKeyEncrypt(s, ais, e, m)
 
-    # Sanity check for valid decryption    
+    # Sanity check for valid decryption
     message_prime = bfv_crt.Decrypt(s, ctis)
-
+        
     assert m == message_prime
 
     # k1 = [QM]t namely the scaled message polynomial
@@ -287,10 +292,11 @@ def main(args):
 
         # sanity check. The coefficients of ai * s + e should be in the range $- (N \cdot \frac{q_i - 1}{2} + B), N \cdot \frac{q_i - 1}{2} + B]$
         bound = int((qis[i] - 1) / 2) * n + b
-        res = ais[i] * s + e
+        print(f" sk r2 bound = {bound}")
+        res = Polynomial(ais[i]) * s + e
         assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
 
-        # constraint. The coefficients of r2i should be in the range [-(qi-1)/2, (qi-1)/2]
+        # constraint. The coefficients of r`2i should be in the range [-(qi-1)/2, (qi-1)/2]
         r2i_bound = int((qis[i] - 1) / 2)
         r2_bounds.append(r2i_bound)
         assert all(coeff >= -r2i_bound and coeff <= r2i_bound for coeff in r2is[i].coefficients)
@@ -411,7 +417,7 @@ def main(args):
     # Construct the dynamic filename
     filename = f"sk_enc_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.json"
 
-    output_path = os.path.join("src", "data", filename)
+    output_path = os.path.join("src", "data", "sk_enc_data",filename)
 
     with open(output_path, 'w') as f:
         json.dump(json_input, f)
@@ -427,12 +433,12 @@ def main(args):
         "ct0is": [["0" for _ in ct0i_in_p.coefficients] for ct0i_in_p in ct0is_in_p],
     }
 
-    output_path = os.path.join("src", "data", f"sk_enc_{args.n}_{qis_len}x{qis_bitsize}_{args.t}_zeroes.json")
+    output_path = os.path.join("src", "data","sk_enc_data", f"sk_enc_{args.n}_{qis_len}x{qis_bitsize}_{args.t}_zeroes.json")
 
     with open(output_path, 'w') as f:
         json.dump(json_input_zeroes, f)
 
-    output_path = os.path.join("src", "constants", f"sk_enc_constants_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.rs")
+    output_path = os.path.join("src", "constants","sk_enc_constants", f"sk_enc_constants_{args.n}_{qis_len}x{qis_bitsize}_{args.t}.rs")
 
     with open(output_path, 'w') as f:
         f.write(f"/// `N` is the degree of the cyclotomic polynomial defining the ring `Rq = Zq[X]/(X^N + 1)`.\n")

@@ -54,6 +54,14 @@ impl<F: ScalarField> PolyAssigned<F> {
             range.check_less_than_safe(ctx_gate, shifted_coeff, (2 * upper_bound) + 1);
         }
     }
+    // pub fn range_check_128(&self,ctx_gate: &mut Context<F>,range: &RangeChip<F>,upper_bound: u128){
+    //     let bound_constant = Constant(F::from_u128(upper_bound));
+
+    //     for coeff in &self.assigned_coefficients {
+    //         let shifted_coeff = range.gate().add(ctx_gate, *coeff, bound_constant);
+    //         range.check_less_than_safe(ctx_gate, shifted_coeff, (2 * upper_bound) + 1);
+    //     }
+    // }
 
     pub fn enforce_eval_at_gamma(
         &self,
