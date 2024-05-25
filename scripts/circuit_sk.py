@@ -1,21 +1,15 @@
 import os
-from bfv.crt import CRTModuli
-from bfv.bfv import BFVCrt
-from bfv.bfv import BFV
-from bfv.discrete_gauss import DiscreteGaussian
-from bfv.polynomial import Polynomial, poly_div
 from random import randint
-import copy
-from utils import assign_to_circuit, count_advice_cells_needed_for_poly_range_check, print_advice_cells_info
 import argparse
 import json
-import numpy as np
+from utils import assign_to_circuit, count_advice_cells_needed_for_poly_range_check, print_advice_cells_info,rlwe_encryption
+from bfv.crt import CRTModuli
+from bfv.bfv import BFVCrt
+from bfv.discrete_gauss import DiscreteGaussian
+from bfv.polynomial import Polynomial
 
 
-
-
-def main(args): 
-    
+def main(args):
     '''
     ENCRYPTION PHASE - performed outside the circuit.
     '''
@@ -43,7 +37,7 @@ def main(args):
 
     # Sanity check for valid decryption
     message_prime = bfv_crt.Decrypt(s, ctis)
-        
+    
     assert m == message_prime
 
     # k1 = [QM]t namely the scaled message polynomial
@@ -62,7 +56,7 @@ def main(args):
     # `k0is` are the negative multiplicative inverses of t modulo each qi.
     k0is = []
 
-    # `ct0is` are the polynomials ct0i for each CRT basis. 
+    # `ct0is` are the polynomials ct0i for each CRT basis.
     ct0is = []
 
     # `ct0is_hat` are the polynomials ct0i_hat for each CRT basis.
@@ -81,65 +75,13 @@ def main(args):
         ct0i = cti[0]
         ai = cti[1].scalar_mul(-1)
 
-        # k0i = -t^{-1} namely the multiplicative inverse of t modulo qi
-        k0i = pow(-t, -1, qis[i])
-        ct0i_hat = ai * s + e + k1.scalar_mul(k0i)
-        assert(len(ct0i_hat.coefficients) - 1 == 2 * n - 2)
+        ct0i_elements = rlwe_encryption(ct0i, qis[i], s, ai, e, k1, cyclo, t, n)
 
-        # ai * s + e + k0i * k1 = ct0i mod Rqi
-        # assert that ct0i_hat = ct0i mod Rqi
-        ct0i_hat_clone = copy.deepcopy(ct0i_hat)
-        # mod Rqi means that we need to:
-        # - reduce the coefficients of ct0i_hat_clone by the cyclotomic polynomial
-        # - reduce the coefficients of ct0i_hat_clone by the modulus
-        ct0i_hat_clone.reduce_coefficients_by_cyclo(cyclo.coefficients)
-        ct0i_hat_clone.reduce_coefficients_by_modulus(qis[i])
-        assert ct0i_hat_clone == ct0i
-
-        # Calculate r2i
-        # divide ct0i - ct0i_hat by the cyclotomic polynomial over Zqi to get r2i
-        num = ct0i + ct0i_hat.scalar_mul(-1)
-        # reduce the coefficients of num by the modulus qi 
-        num.reduce_coefficients_by_modulus(qis[i])
-        (quotient, rem) = poly_div(num.coefficients, cyclo.coefficients)
-        # assert that the remainder is zero
-        assert rem == []
-        r2i = Polynomial(quotient)
-        # assert that the degree of r2i is equal to n - 2
-        assert len(r2i.coefficients) - 1 == n - 2
-
-        # Assert that ct0i - ct0i_hat = r2i * cyclo mod Zqi
-        lhs = ct0i + ct0i_hat.scalar_mul(-1)
-        rhs = r2i * cyclo
-        # reduce the coefficients of lhs by the modulus qi
-        lhs.reduce_coefficients_by_modulus(qis[i])
-        assert lhs == rhs 
-        
-        # Calculate r1i
-        # divide ct0i - ct0i_hat - r2i * cyclo by the modulus qi to get r1i
-        num = ct0i + ct0i_hat.scalar_mul(-1) + (r2i * cyclo).scalar_mul(-1)
-        (quotient, rem) = poly_div(num.coefficients, [qis[i]])
-        # assert that the remainder is zero
-        assert rem == []
-        r1i = Polynomial(quotient)
-        # assert that the degree of r1i is 2n - 2
-        assert len(r1i.coefficients) - 1 == 2 * n - 2
-
-        # Assert that ct0i = ct0i_hat + r1i * qi + r2i * cyclo mod Zp
-        lhs = ct0i
-        rhs = ct0i_hat + (r1i.scalar_mul(qis[i])) + (r2i * cyclo)
-
-        # remove the leading zeroes from rhs until the length of rhs.coefficients is equal to n
-        while len(rhs.coefficients) > n and rhs.coefficients[0] == 0:
-            rhs.coefficients.pop(0)
-
-        assert lhs == rhs
-
-        r2is.append(r2i)
-        r1is.append(r1i)
-        k0is.append(k0i)
-        ct0is.append(ct0i)
-        ct0is_hat.append(ct0i_hat)
+        r2is.append(ct0i_elements[0])
+        r1is.append(ct0i_elements[1])
+        k0is.append(ct0i_elements[2])
+        ct0is.append(ct0i_elements[3])
+        ct0is_hat.append(ct0i_elements[4])
 
     # `r1_bounds` are the bounds for the coefficients of r1i for each CRT basis
     r1_bounds = []
@@ -292,8 +234,7 @@ def main(args):
 
         # sanity check. The coefficients of ai * s + e should be in the range $- (N \cdot \frac{q_i - 1}{2} + B), N \cdot \frac{q_i - 1}{2} + B]$
         bound = int((qis[i] - 1) / 2) * n + b
-        print(f" sk r2 bound = {bound}")
-        res = Polynomial(ais[i]) * s + e
+        res = ais[i] * s + e
         assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
 
         # constraint. The coefficients of r`2i should be in the range [-(qi-1)/2, (qi-1)/2]

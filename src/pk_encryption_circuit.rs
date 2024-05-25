@@ -21,7 +21,7 @@ use crate::{
 pub fn test_params() -> RlcCircuitParams {
     RlcCircuitParams {
         base: BaseCircuitParams {
-            k: 21,
+            k: 22,
             num_advice_per_phase: vec![1, 1],
             num_fixed: 1,
             num_lookup_advice_per_phase: vec![0, 1],
@@ -403,8 +403,8 @@ mod test {
 
     use axiom_eth::{
         halo2_proofs::{
-            dev::MockProver,
-            plonk::{keygen_pk, keygen_vk},
+            dev::{FailureLocation, MockProver, VerifyFailure},
+            plonk::{keygen_pk, keygen_vk, Any, SecondPhase},
         },
         halo2curves::bn256::Fr,
         rlc::{
@@ -426,58 +426,32 @@ mod test {
 
     #[test]
     fn test_pk_enc_valid() {
+        // 1. Define the inputs of the circuit
         let file_path_zeros = "src/data/pk_enc_data/pk_enc_1024_15x60_65537_zeroes.json";
         let mut file = File::open(file_path_zeros).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
-        let empty_pk_enc_circuit = serde_json::from_str::<BfvPkEncryptionCircuit>(&data).unwrap();
-
-        // 2. Generate (unsafe) trusted setup parameters
-        // Here we are setting a small k for optimization purposes
-        let k = 14;
-        let kzg_params = gen_srs(k as u32);
-
-        // 3. Build the circuit for key generation,
-        let mut key_gen_builder =
-            RlcCircuitBuilder::<Fr>::from_stage(CircuitBuilderStage::Keygen, 0).use_k(k);
-        key_gen_builder.base.set_lookup_bits(k - 1); // lookup bits set to `k-1` as suggested [here](https://docs.axiom.xyz/protocol/zero-knowledge-proofs/getting-started-with-halo2#technical-detail-how-to-choose-lookup_bits)
-        key_gen_builder.base.set_instance_columns(1);
-        let rlc_circuit = RlcExecutor::new(key_gen_builder, empty_pk_enc_circuit.clone());
-
-        // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
-        let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
-
-        // 4. Generate the verification key and the proving key
-        let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
-        let pk = keygen_pk(&kzg_params, vk, &rlc_circuit).unwrap();
-        let break_points = rlc_circuit.0.builder.borrow().break_points();
-        drop(rlc_circuit);
-
-        // 5. Generate the proof, here we pass the actual inputs
-        let mut proof_gen_builder: RlcCircuitBuilder<Fr> =
-            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
-                .use_params(rlc_circuit_params);
-        proof_gen_builder.base.set_lookup_bits(k - 1);
-        proof_gen_builder.base.set_instance_columns(1);
-
-        let file_path = "src/data/pk_enc_data/pk_enc_1024_15x60_65537.json";
-        let mut file = File::open(file_path).unwrap();
-        let mut data = String::new();
-        file.read_to_string(&mut data).unwrap();
         let pk_enc_circuit = serde_json::from_str::<BfvPkEncryptionCircuit>(&data).unwrap();
 
-        let rlc_circuit = RlcExecutor::new(proof_gen_builder, pk_enc_circuit.clone());
+        // 2. Build the circuit for MockProver using the test parameters
+        let rlc_circuit_params = test_params();
+        let mut mock_builder: RlcCircuitBuilder<Fr> =
+            RlcCircuitBuilder::from_stage(CircuitBuilderStage::Mock, 0)
+                .use_params(rlc_circuit_params.clone());
+        mock_builder.base.set_lookup_bits(8);
 
-        rlc_circuit
-            .0
-            .builder
-            .borrow_mut()
-            .set_break_points(break_points);
         let instances = pk_enc_circuit.instances();
-        let proof = gen_proof_with_instances(&kzg_params, &pk, rlc_circuit, &[&instances[0]]);
 
-        // 6. Verify the proof
-        check_proof_with_instances(&kzg_params, pk.get_vk(), &proof, &[&instances[0]], true);
+        let rlc_circuit = RlcExecutor::new(mock_builder, pk_enc_circuit);
+
+        // 3. Run the mock prover. The circuit should be satisfied
+        MockProver::run(
+            rlc_circuit_params.base.k.try_into().unwrap(),
+            &rlc_circuit,
+            instances,
+        )
+        .unwrap()
+        .assert_satisfied();
     }
 
     #[test]
@@ -504,6 +478,7 @@ mod test {
 
         // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
         let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
+
 
         // 4. Generate the verification key and the proving key
         let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
@@ -573,7 +548,27 @@ mod test {
 
         // 5. Assert that the circuit is not satisfied
         // In particular, it should fail the range check enforced in the second phase for the first coefficient of r1is[0] and the equality check in the second phase for the 0-th basis
-        // TODO:Check from the cmd prmt for excat cell location
+         assert_eq!(
+            invalid_mock_prover.verify(),
+            Err(vec![
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 1).into(),
+                    location: FailureLocation::OutsideRegion { row: 115709 }
+                },
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 1).into(),
+                    location: FailureLocation::OutsideRegion { row: 115719 }
+                },
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 1).into(),
+                    location: FailureLocation::OutsideRegion { row: 2914202 }
+                },
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 1).into(),
+                    location: FailureLocation::OutsideRegion { row: 2914222 }
+                },
+            ])
+        );
     }
 
     #[test]
@@ -608,9 +603,31 @@ mod test {
         )
         .unwrap();
 
+
         // 5. Assert that the circuit is not satisfied
         // In particular, it should fail the equality check (LHS=RHS) in the second phase for each i-th CRT basis
-        // TODO:Check from the cmd prmt for excat cell location
+         assert_eq!(
+            invalid_mock_prover.verify(),
+            Err(vec![
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 1).into(),
+                    location: FailureLocation::OutsideRegion { row: 2914202 }
+                },
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 1).into(),
+                    location: FailureLocation::OutsideRegion { row: 2914222 }
+                },
+                VerifyFailure::Permutation {
+                    column: (Any::Instance, 0).into(),
+                    location: FailureLocation::OutsideRegion { row: 0 }
+                },
+                VerifyFailure::Permutation {
+                    column: (Any::advice_in(SecondPhase), 3).into(),
+                    location: FailureLocation::OutsideRegion { row: 8191 }
+                },
+            ])
+        );
+
     }
 
     #[test]
