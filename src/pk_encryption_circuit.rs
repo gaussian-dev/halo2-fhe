@@ -479,7 +479,6 @@ mod test {
         // The parameters are auto configured by halo2 lib to fit all the columns into the `k`-sized table
         let rlc_circuit_params = rlc_circuit.0.calculate_params(Some(9));
 
-
         // 4. Generate the verification key and the proving key
         let vk = keygen_vk(&kzg_params, &rlc_circuit).unwrap();
         let pk = keygen_pk(&kzg_params, vk, &rlc_circuit).unwrap();
@@ -548,7 +547,7 @@ mod test {
 
         // 5. Assert that the circuit is not satisfied
         // In particular, it should fail the range check enforced in the second phase for the first coefficient of r1is[0] and the equality check in the second phase for the 0-th basis
-         assert_eq!(
+        assert_eq!(
             invalid_mock_prover.verify(),
             Err(vec![
                 VerifyFailure::Permutation {
@@ -603,10 +602,9 @@ mod test {
         )
         .unwrap();
 
-
         // 5. Assert that the circuit is not satisfied
         // In particular, it should fail the equality check (LHS=RHS) in the second phase for each i-th CRT basis
-         assert_eq!(
+        assert_eq!(
             invalid_mock_prover.verify(),
             Err(vec![
                 VerifyFailure::Permutation {
@@ -627,7 +625,6 @@ mod test {
                 },
             ])
         );
-
     }
 
     #[test]

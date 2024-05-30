@@ -2,15 +2,14 @@ import os
 import argparse
 import json
 from random import randint
-import copy
 from bfv.crt import CRTModuli
 from bfv.bfv import BFVCrt
 from bfv.discrete_gauss import DiscreteGaussian
-from bfv.polynomial import Polynomial, poly_div
+from bfv.polynomial import Polynomial
 from utils import assign_to_circuit, count_advice_cells_needed_for_poly_range_check, print_advice_cells_info,rlwe_encryption
 
 
-def main(args): 
+def main(args):
     '''
     ENCRYPTION PHASE - performed outside the circuit.
     '''
@@ -65,13 +64,13 @@ def main(args):
     # `k0is` are the negative multiplicative inverses of t modulo each qi.
     k0is = []
 
-    # `ct0is` are the polynomials ct0i for each CRT basis. 
+    # `ct0is` are the polynomials ct0i for each CRT basis.
     ct0is = []
 
     # `ct0is_hat` are the polynomials ct0i_hat for each CRT basis.
     ct0is_hat = []
 
-    # `ct1is` are the polynomials ct0i for each CRT basis. 
+    # `ct1is` are the polynomials ct0i for each CRT basis.
     ct1is = []
 
     # `ct1is_hat` are the polynomials ct0i_hat for each CRT basis.
@@ -90,7 +89,6 @@ def main(args):
     p2is = []
 
 
-
     '''
     SETUP PHASE - performed outside the circuit
     For each CRT basis, we need to compute the polynomials r1i and r2i (check this doc for more details: https://hackmd.io/@gaussian/r1W98Kqqa)
@@ -102,10 +100,12 @@ def main(args):
     for i,pk in enumerate(pub_key):
         pk0_array.append(pk[0])
         pk1_array.append(pk[1])
-    
+
     cyclo = [1] + [0] * (n - 1) + [1]
     cyclo = Polynomial(cyclo)
 
+    zero_poly = [0] * (n + 1)
+    zero_poly = Polynomial(zero_poly)
 
     for i, cti in enumerate(ciphertext):
 
@@ -114,58 +114,16 @@ def main(args):
 
         pk0 = pk0_array[i]
         pk1 = pk1_array[i]
-    
+
         ct0i_elements = rlwe_encryption(ct0i, qis[i], u, pk0, e0, k1, cyclo, t, n)
 
-        # ct1_hat = pk1 * u + e1
-        ct1i_hat = pk1 * u + e1
-        assert(len(ct1i_hat.coefficients) - 1 == 2 * n - 2)
-
-        ct1i_hat_clone = copy.deepcopy(ct1i_hat)
-
-        ct1i_hat_clone.reduce_coefficients_by_cyclo(cyclo.coefficients)
-        ct1i_hat_clone.reduce_coefficients_by_modulus(qis[i])
-        assert ct1i_hat_clone == ct1i
-
-        #Calculating the p2i and p1i for ct1i is same as we calculating the r2i and r1i
-        num = ct1i + ct1i_hat.scalar_mul(-1)
-        num.reduce_coefficients_by_modulus(qis[i])
-
-        (quotient,rem) = poly_div(num.coefficients,cyclo.coefficients)
-        assert rem == []
-
-        p2i = Polynomial(quotient)
-        assert len(p2i.coefficients) - 1 == n - 2
-
-        #assert ct1i - ct1i_hat = p2i * cyclo mod zqi
-        lhs = ct1i + ct1i_hat.scalar_mul(-1) 
-        rhs = p2i * cyclo
-
-        #reduce the coefficients of lhs by modulus qi 
-        lhs.reduce_coefficients_by_modulus(qis[i])
-        assert lhs == rhs
-
-        num = ct1i + ct1i_hat.scalar_mul(-1) + (p2i * cyclo).scalar_mul(-1)
-        (quotient,rem) = poly_div(num.coefficients,[qis[i]])
-
-        assert rem == []
-        p1i = Polynomial(quotient)
-
-        lhs = ct1i
-        rhs = ct1i_hat + (p1i * Polynomial([qis[i]]) + (p2i * cyclo))
-
-        for j in range(len(rhs.coefficients)):
-            if rhs.coefficients[j] != 0:
-                rhs.coefficients = rhs.coefficients[j:]
-                break
-
-        assert lhs == rhs
+        ct1i_elements = rlwe_encryption(ct1i, qis[i], u, pk1, e1, zero_poly, cyclo, t, n)
 
         pk1is.append(pk1)
-        p2is.append(p2i)
-        p1is.append(p1i)
-        ct1is.append(ct1i)
-        ct1is_hat.append(ct1i_hat)
+        p2is.append(ct1i_elements[0])
+        p1is.append(ct1i_elements[1])
+        ct1is.append(ct1i_elements[3])
+        ct1is_hat.append(ct1i_elements[4])
         r2is.append(ct0i_elements[0])
         r1is.append(ct0i_elements[1])
         k0is.append(ct0i_elements[2])
@@ -183,7 +141,7 @@ def main(args):
     p1_bounds = []
 
     # `p2_bounds` are the bounds for the coefficients of p2i for each CRT basis
-    p2_bounds = []    
+    p2_bounds = []
 
     # initiate counters for the number of advice cells needed for each constraint phase
     phase_0_assignment_advice_cell_count = 0
@@ -440,10 +398,9 @@ def main(args):
 
         phase_1_range_check_advice_cell_count += count_advice_cells_needed_for_poly_range_check(p2is_assigned[i], 2*p2i_bound + 1, lookup_bits)
 
-        # p1i =(ct0i - ct0i_hat  - p2i * cyclo) / qis[i] 
-        # range = (pk1 * u + e1 ) /qis[i]
-        # range = (((qis[i] - 1 ) / 2) * (n + 2) + b) / qis[i]
-
+        #ct0i - ct0i_hat = $[ (N+1) \cdot \frac{q_i - 1}{2} + B , (N+1) \cdot \frac{q_i - 1}{2} + B ]$
+        #ct0i - ct0i_hat - p2i * cyclo = $[ (N+2) \cdot \frac{q_i - 1}{2} + B , (N+2) \cdot \frac{q_i - 1}{2} + B ]$
+        # p1i = (ct0i - ct0i_hat - p2i * cyclo)/ qi = $[\frac{- ((N+2) \cdot \frac{q_i - 1}{2} + B )}{q_i}, \frac{((N+2) \cdot \frac{q_i - 1}{2} + B )}{q_i}]$
         # constraint. The coefficients of (ct0i - ct0i_hat - p2i * cyclo) / qi = p1i should be in the range [(((qis[i] - 1) / 2) * (n + 2) + b ) /qis[i]]
         p1i_bound = (int((qis[i] - 1) / 2) * (n + 2) + b ) / qis[i]
         # round bound to the nearest integer
