@@ -1,80 +1,96 @@
 import math
-import copy
-from bfv.polynomial import Polynomial,poly_div
+from typing import NamedTuple
+from bfv.polynomial import Polynomial
 
-
-def rlwe_encryption(cti: Polynomial, qi: Polynomial, u_s: Polynomial, pk_a: Polynomial, e: Polynomial, k1: Polynomial, cyclo: Polynomial, t: int, n: int) -> list:
+class CiphertextFormationInput(NamedTuple):
     '''
-    This function takes input and performs the rlwe encryption 
-    `cti` is ciphertext of either pk-enc or sk-enc
-    `u_s` it contains either `u` or `s` based on the encryption used
-    `pk_a` it contains either `pk0`, `pk1` or `a` based on the encryption used
+    This class includes all the inputs required for the calculation of the ciphertext(1st Matrix)
+    'ais_pk0' is a polynomial, with 'ais' used for sk_enc and `pk0` used for pk_enc
+    `s_u` is a polynomial, with 'ais' used for sk_enc and `pk0` used for pk_enc
     '''
-    enc_elements = []
-
-    # k0i = -t^{-1} namely the multiplicative inverse of t modulo qi
-    k0i = pow(-t,-1,qi)
-
-    cti_hat = pk_a * u_s + e + k1.scalar_mul(k0i)
-    assert(len(cti_hat.coefficients) - 1 == 2 * n - 2)
-    # pk_a * u_s + e + k0i * k1 = cti mod Rqi
-    # assert that cti_hat = cti mod Rqi
-    cti_hat_clone = copy.deepcopy(cti_hat)
-    # mod Rqi means that we need to:
-    # - reduce the coefficients of cti_hat_clone by the cyclotomic polynomial
-    # - reduce the coefficients of cti_hat_clone by the modulus
-    cti_hat_clone.reduce_coefficients_by_cyclo(cyclo.coefficients)
-    cti_hat_clone.reduce_coefficients_by_modulus(qi)
-    assert cti_hat_clone == cti
-
-    
-    # Calculate r2i_p2i 
-    # divide cti - cti_hat by the cyclotomic polynomial over Zqi to get r2i or p2i based on the encryption used.
-    num = cti + cti_hat.scalar_mul(-1)
-    # reduce the coefficients of num by the modulus qi 
-    num.reduce_coefficients_by_modulus(qi)
-    (quotient, rem) = poly_div(num.coefficients, cyclo.coefficients)
-    # assert that the remainder is zero
-    assert rem == []
-    r2i_p2i = Polynomial(quotient)
-    # assert that the degree of r2i_p2i is equal to n - 2
-    assert len(r2i_p2i.coefficients) - 1 == n - 2
-    enc_elements.append(r2i_p2i)
-
-    # Assert that cti - cti_hat = r2i_p2i * cyclo mod Zqi
-    lhs = cti + cti_hat.scalar_mul(-1)
-    rhs = r2i_p2i * cyclo
-    # reduce the coefficients of lhs by the modulus qi
-    lhs.reduce_coefficients_by_modulus(qi)
-    assert lhs == rhs
-        
-    # Calculate r1i
-    # divide cti - cti_hat - r2i_p2i * cyclo by the modulus qi to get r1i
-    num = cti + cti_hat.scalar_mul(-1) + (r2i_p2i * cyclo).scalar_mul(-1)
-    (quotient, rem) = poly_div(num.coefficients, [qi])
-    # assert that the remainder is zero
-    assert rem == []
-    r1i = Polynomial(quotient)
-    # assert that the degree of r1i is 2n - 2
-    assert len(r1i.coefficients) - 1 == 2 * n - 2
-    enc_elements.append(r1i)
-
-    enc_elements.append(k0i)
-
-    # Assert that cti = cti_hat + r1i * qi + r2i_p2i * cyclo mod Zp
-    lhs = cti
-    enc_elements.append(cti)
-
-    rhs = cti_hat + (r1i.scalar_mul(qi)) + (r2i_p2i * cyclo)
-    enc_elements.append(cti_hat)
-
-    # remove the leading zeroes from rhs until the length of rhs.coefficients is equal to n
-    while len(rhs.coefficients) > n and rhs.coefficients[0] == 0:
-        rhs.coefficients.pop(0)
+    qis: int
+    n: int
+    b: int
+    t: int
+    ctis: Polynomial
+    ais_pk0: Polynomial
+    s_u: Polynomial
+    e: Polynomial
+    r2is: Polynomial
+    k0is: Polynomial
+    k1:Polynomial
+    ctis_hat: Polynomial
+    r1is: Polynomial
 
 
-    assert lhs == rhs
-    return enc_elements
+def poly_range_check(poly:Polynomial , poly_assigned:Polynomial, p:int, bound:int):
+    '''
+    This function takes `bound` and `polynomial` and checks its shifted coefficients are within 2*bound
+    `poly` is the polynomial in its original form
+    `poly_assigned` is the polynomial that is assignedd to the circuit 
+    `bound` is the range in which the polynimial coefficient should exist 
+    '''
+
+    # constraint. The coefficients of poly should be in the range [-bound, 0, bound]
+    assert all(coeff >= -bound and coeff <= bound for coeff in poly.coefficients)
+    # After the circuit assignement, the coefficients of poly_assigned must be in  [0, bound] or [p - bound, p - 1]
+    assert all(coeff in range(0, bound+1) or coeff in range(p - bound, p) for coeff in poly_assigned.coefficients)
+    # To perform a range check with a smaller lookup table, we shift the coefficients of poly_assigned to be in [0, 2B] (the shift operation is constrained inside the circuit)
+    poly_shifted = Polynomial([(coeff + bound) % p for coeff in poly_assigned.coefficients])
+    assert all(coeff >= 0 and coeff <= 2*bound for coeff in poly_shifted.coefficients)
+
+
+def range_check_ciphertext_formation(args:CiphertextFormationInput):
+
+    '''
+    This function takes arguments as input, performs range checks on the polynomial after each operation,
+    and calculates the first matrix (ct0) for sk_enc and pk_enc.
+    '''
+
+    cyclo = [1] + [0] * (args.n - 1) + [1]
+    cyclo = Polynomial(cyclo)
+    # sanity check. The coefficients of ct0i should be in the range [-(qi-1)/2, (qi-1)/2]
+    bound = int((args.qis - 1) / 2)
+    assert all(coeff >= -bound and coeff <= bound for coeff in args.ctis.coefficients)
+
+    # sanity check. The coefficients of `ais` or `pk0` should be in the range [-(qi-1)/2, (qi-1)/2]
+    bound = int((args.qis - 1) / 2)
+    assert all(coeff >= -bound and coeff <= bound for coeff in args.ais_pk0.coefficients)
+
+    # sanity check. The coefficients of ais_pk0 * s_u should be in the range $[-N \cdot \frac{q_i - 1}{2}, N \cdot \frac{q_i - 1}{2}]$
+    bound = int((args.qis - 1) / 2) * args.n
+    res = args.ais_pk0 * args.s_u
+    assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
+
+    # sanity check. The coefficients of ais_pk0 * s_u + e should be in the range $- (N \cdot \frac{q_i - 1}{2} + B), N \cdot \frac{q_i - 1}{2} + B]$
+    bound = int((args.qis - 1) / 2) * args.n + args.b
+    res = args.ais_pk0 * args.s_u + args.e
+    assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
+
+    # sanity check. The coefficients of r2i * cyclo should be in the range [-(qi-1)/2, (qi-1)/2]
+    bound = int((args.qis - 1) / 2)
+    res = args.r2is * cyclo
+    assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
+
+    # sanity check. The coefficients of k1 * k0i should be in the range $[-\frac{t - 1}{2} \cdot |K_{0,i}|, \frac{t - 1}{2} \cdot |K_{0,i}|]$
+    bound = int((args.t - 1) / 2) * abs(args.k0is)
+    res = args.k1.scalar_mul(args.k0is)
+    assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
+
+    # sanity check. The coefficients of ct0i_hat (ais_pk0 * s_u + e + k1 * k0i) should be in the range $[- (N \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|), N \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|]$
+    bound = int((args.qis - 1) / 2) * args.n + args.b + int((args.t - 1) / 2) * abs(args.k0is)
+    assert all(coeff >= -bound and coeff <= bound for coeff in args.ctis_hat.coefficients)
+
+    # sanity check. The coefficients of ct0i - ct0i_hat should be in the range $ [- ((N+1) \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|), (N+1) \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|]$
+    bound = int((args.qis - 1) / 2) * (args.n + 1) + args.b + int((args.t - 1) / 2) * abs(args.k0is)
+    sub = args.ctis + (args.ctis_hat.scalar_mul(-1))
+    assert all(coeff >= -bound and coeff <= bound for coeff in sub.coefficients)
+
+    # sanity check. The coefficients of ct0i - ct0i_hat - r2i * cyclo should be in the range $[- ((N+2) \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|), (N+2) \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|]$
+    bound = ((args.qis - 1) / 2) * (args.n + 2) + args.b + ((args.t - 1) / 2) * abs(args.k0is)
+    sub = args.ctis + (args.ctis_hat.scalar_mul(-1)) + (args.r2is * cyclo).scalar_mul(-1)
+    assert all(coeff >= -bound and coeff <= bound for coeff in sub.coefficients)
+
 
 
 def assign_to_circuit(poly: Polynomial, p: int) -> Polynomial:

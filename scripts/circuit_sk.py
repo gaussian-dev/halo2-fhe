@@ -2,7 +2,8 @@ import os
 from random import randint
 import argparse
 import json
-from utils import assign_to_circuit, count_advice_cells_needed_for_poly_range_check, print_advice_cells_info,rlwe_encryption
+from utils import assign_to_circuit, count_advice_cells_needed_for_poly_range_check, print_advice_cells_info,poly_range_check,CiphertextFormationInput,range_check_ciphertext_formation
+from rlwe import rlwe_encryption
 from bfv.crt import CRTModuli
 from bfv.bfv import BFVCrt
 from bfv.discrete_gauss import DiscreteGaussian
@@ -37,7 +38,7 @@ def main(args):
 
     # Sanity check for valid decryption
     message_prime = bfv_crt.Decrypt(s, ctis)
-    
+
     assert m == message_prime
 
     # k1 = [QM]t namely the scaled message polynomial
@@ -75,6 +76,7 @@ def main(args):
         ct0i = cti[0]
         ai = cti[1].scalar_mul(-1)
 
+        #generates the parameters which are used to calculate ct0i
         ct0i_elements = rlwe_encryption(ct0i, qis[i], s, ai, e, k1, cyclo, t, n)
 
         r2is.append(ct0i_elements[0])
@@ -100,7 +102,7 @@ def main(args):
     '''
 
     # Every assigned value must be an element of the field Zp. Negative coefficients `-z` are assigned as `p - z`
-    s_assigned = assign_to_circuit(s, p)    
+    s_assigned = assign_to_circuit(s, p)
     e_assigned = assign_to_circuit(e, p)
     k1_assigned = assign_to_circuit(k1, p)
 
@@ -138,24 +140,10 @@ def main(args):
     '''
 
     # Every assigned value must be an element of the field Zp. Negative coefficients `-z` are assigned as `p - z`
-    # ais_at_gamma_assigned = []
-    # ct0is_at_gamma_assigned = []
     qi_constants = []
     k0i_constants = []
 
     for i in range(len(ctis)):
-        # ai_at_gamma = ais[i].evaluate(gamma)
-        # ai_at_gamma_assigned = assign_to_circuit(Polynomial([ai_at_gamma]), p).coefficients[0]
-        # ais_at_gamma_assigned.append(ai_at_gamma_assigned)
-
-        # phase_1_assignment_advice_cell_count += 1
-
-        # ct0i_at_gamma = ctis[i][0].evaluate(gamma)
-        # ct0i_at_gamma_assigned = assign_to_circuit(Polynomial([ct0i_at_gamma]), p).coefficients[0]
-        # ct0is_at_gamma_assigned.append(ct0i_at_gamma_assigned)
-
-        # phase_1_assignment_advice_cell_count += 1
-
         qi_constants.append(qis[i])
 
         k0i_constant = assign_to_circuit(Polynomial([k0is[i]]), p).coefficients[0]
@@ -167,36 +155,21 @@ def main(args):
 
     lookup_bits = 8
 
-    s_bound = 1
     # constraint. The coefficients of s should be in the range [-1, 0, 1]
-    assert all(coeff >= -s_bound and coeff <= s_bound for coeff in s.coefficients)
-    # After the circuit assignement, the coefficients of s_assigned must be in [0, 1, p - 1]
-    assert all(coeff in range(0, s_bound+1) or coeff in range(p - s_bound, p) for coeff in s_assigned.coefficients)
-    # To perform a range check with a smaller lookup table, we shift the coefficients of s_assigned to be in [0, 1, 2] (the shift operation is constrained inside the circuit)
-    s_shifted = Polynomial([(coeff + 1) % p for coeff in s_assigned.coefficients])
-    assert all(coeff >= 0 and coeff <= 2*s_bound for coeff in s_shifted.coefficients)
+    s_bound = 1
+    poly_range_check(s,s_assigned,int(s_bound),p)
 
     phase_1_range_check_advice_cell_count += count_advice_cells_needed_for_poly_range_check(s_assigned, 2*s_bound + 1, lookup_bits)
-    
+
     # constraint. The coefficients of e should be in the range [-B, B] where B is the upper bound of the discrete Gaussian distribution
     b = int(discrete_gaussian.z_upper)
-    assert all(coeff >= -b and coeff <= b for coeff in e.coefficients)
-    # After the circuit assignement, the coefficients of e_assigned must be in [0, B] or [p - B, p - 1]
-    assert all(coeff in range(0, b+1) or coeff in range(p - b, p) for coeff in e_assigned.coefficients)
-    # To perform a range check with a smaller lookup table, we shift the coefficients of e_assigned to be in [0, 2B] (the shift operation is constrained inside the circuit)
-    e_shifted = Polynomial([(coeff + b) % p for coeff in e_assigned.coefficients])
-    assert all(coeff >= 0 and coeff <= 2*b for coeff in e_shifted.coefficients)
+    poly_range_check(e,e_assigned,b,p)
 
     phase_1_range_check_advice_cell_count += count_advice_cells_needed_for_poly_range_check(e_assigned, 2*b + 1, lookup_bits)
-    
+
     # constraint. The coefficients of k1 should be in the range [-(t-1)/2, (t-1)/2]
     k1_bound = int((t - 1) / 2)
-    assert all(coeff >= -k1_bound and coeff <= k1_bound for coeff in k1.coefficients)
-    # After the circuit assignement, the coefficients of k1_assigned must be in [0, k1_bound] or [p - k1_bound, p - 1] 
-    assert all(coeff in range(0, int(k1_bound) + 1) or coeff in range(p - int(k1_bound), p) for coeff in k1_assigned.coefficients)
-    # To perform a range check with a smaller lookup table, we shift the coefficients of k1_assigned to be in [0, 2*k1_bound] (the shift operation is constrained inside the circuit)
-    k1_shifted = Polynomial([(coeff + int(k1_bound)) % p for coeff in k1_assigned.coefficients])
-    assert all(coeff >= 0 and coeff <= 2*k1_bound for coeff in k1_shifted.coefficients)
+    poly_range_check(k1,k1_assigned,k1_bound,p)
 
     phase_1_range_check_advice_cell_count += count_advice_cells_needed_for_poly_range_check(k1_assigned, 2*k1_bound + 1, lookup_bits)
 
@@ -219,71 +192,39 @@ def main(args):
     phase_1_eval_at_gamma_constraint_advice_cell_count += 4
 
     for i in range(len(ctis)):
-        # sanity check. The coefficients of ct0i should be in the range [-(qi-1)/2, (qi-1)/2]
-        bound = int((qis[i] - 1) / 2)
-        assert all(coeff >= -bound and coeff <= bound for coeff in ct0is[i].coefficients)
+        args = CiphertextFormationInput(
+            qis=qis[i],
+            n=n,
+            b=b,
+            t=t,
+            ctis=ct0is[i],
+            ais_pk0=ais[i],
+            s_u=s,
+            e=e,
+            r2is=r2is[i],
+            k0is=k0is[i],
+            k1=k1,
+            ctis_hat=ct0is_hat[i],
+            r1is=r1is[i]
+        )
 
-        # sanity check. The coefficients of ai should be in the range [-(qi-1)/2, (qi-1)/2]
-        bound = int((qis[i] - 1) / 2)
-        assert all(coeff >= -bound and coeff <= bound for coeff in ais[i].coefficients)
+        #conducts a range check at each step of forming ct0i
+        range_check_ciphertext_formation(args)
 
-        # sanity check. The coefficients of ai * s should be in the range $[-N \cdot \frac{q_i - 1}{2}, N \cdot \frac{q_i - 1}{2}]$
-        bound = int((qis[i] - 1) / 2) * n
-        res = ais[i] * s
-        assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
-
-        # sanity check. The coefficients of ai * s + e should be in the range $- (N \cdot \frac{q_i - 1}{2} + B), N \cdot \frac{q_i - 1}{2} + B]$
-        bound = int((qis[i] - 1) / 2) * n + b
-        res = ais[i] * s + e
-        assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
-
-        # constraint. The coefficients of r`2i should be in the range [-(qi-1)/2, (qi-1)/2]
+        # constraint. The coefficients of r2i should be in the range [-(qi-1)/2, (qi-1)/2]
         r2i_bound = int((qis[i] - 1) / 2)
         r2_bounds.append(r2i_bound)
-        assert all(coeff >= -r2i_bound and coeff <= r2i_bound for coeff in r2is[i].coefficients)
-        # After the circuit assignement, the coefficients of r2i_assigned must be in [0, r2i_bound] or [p - r2i_bound, p - 1] 
-        assert all(coeff in range(0, int(r2i_bound) + 1) or coeff in range(p - int(r2i_bound), p) for coeff in r2is_assigned[i].coefficients)
-        # To perform a range check with a smaller lookup table, we shift the coefficients of r2i_assigned to be in [0, 2*r2i_bound] (the shift operation is constrained inside the circuit)
-        r2i_shifted = Polynomial([(coeff + int(r2i_bound)) % p for coeff in r2is_assigned[i].coefficients])
-        assert all(coeff >= 0 and coeff <= 2*r2i_bound for coeff in r2i_shifted.coefficients)
+        poly_range_check(r2is[i],r2is_assigned[i],p,r2i_bound)
 
         phase_1_range_check_advice_cell_count += count_advice_cells_needed_for_poly_range_check(r2is_assigned[i], 2*r2i_bound + 1, lookup_bits)
-
-        # sanity check. The coefficients of r2i * cyclo should be in the range [-(qi-1)/2, (qi-1)/2]
-        bound = int((qis[i] - 1) / 2)
-        res = r2is[i] * cyclo
-        assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
-
-        # sanity check. The coefficients of k1 * k0i should be in the range $[-\frac{t - 1}{2} \cdot |K_{0,i}|, \frac{t - 1}{2} \cdot |K_{0,i}|]$
-        bound = int((t - 1) / 2) * abs(k0is[i])
-        res = k1.scalar_mul(k0is[i])
-        assert all(coeff >= -bound and coeff <= bound for coeff in res.coefficients)
-
-        # sanity check. The coefficients of ct0i_hat (ai * s + e + k1 * k0i) should be in the range $[- (N \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|), N \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|]$
-        bound = int((qis[i] - 1) / 2) * n + b + int((t - 1) / 2) * abs(k0is[i])
-        assert all(coeff >= -bound and coeff <= bound for coeff in ct0is_hat[i].coefficients)
-
-        # sanity check. The coefficients of ct0i - ct0i_hat should be in the range $ [- ((N+1) \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|), (N+1) \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|]$
-        bound = int((qis[i] - 1) / 2) * (n + 1) + b + int((t - 1) / 2) * abs(k0is[i])
-        sub = ct0is[i] + (ct0is_hat[i].scalar_mul(-1))
-        assert all(coeff >= -bound and coeff <= bound for coeff in sub.coefficients)
-
-        # sanity check. The coefficients of ct0i - ct0i_hat - r2i * cyclo should be in the range $[- ((N+2) \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|), (N+2) \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|]$
-        bound = ((qis[i] - 1) / 2) * (n + 2) + b + ((t - 1) / 2) * abs(k0is[i])
-        sub = ct0is[i]  + (ct0is_hat[i].scalar_mul(-1)) + (r2is[i] * cyclo).scalar_mul(-1)
-        assert all(coeff >= -bound and coeff <= bound for coeff in sub.coefficients)
 
         # constraint. The coefficients of (ct0i - ct0i_hat - r2i * cyclo) / qi = r1i should be in the range $[\frac{- ((N+2) \cdot \frac{q_i - 1}{2} + B +\frac{t - 1}{2} \cdot |K_{0,i}|)}{q_i}, \frac{(N+2) \cdot \frac{q_i - 1}{2} + B + \frac{t - 1}{2} \cdot |K_{0,i}|}{q_i}]$
         r1i_bound = (int((qis[i] - 1) / 2) * (n + 2) + b + int((t - 1) / 2) * abs(k0is[i])) / qis[i]
         # round bound to the nearest integer
         r1i_bound = int(r1i_bound)
         r1_bounds.append(r1i_bound)
-        assert all(coeff >= -r1i_bound and coeff <= r1i_bound for coeff in r1is[i].coefficients)
-        # After the circuit assignement, the coefficients of r1i_assigned must be in [0, r1i_bound] or [p - r1i_bound, p - 1]
-        assert all(coeff in range(0, int(r1i_bound) + 1) or coeff in range(p - int(r1i_bound), p) for coeff in r1is_assigned[i].coefficients)
-        # To perform a range check with a smaller lookup table, we shift the coefficients of r1i_assigned to be in [0, 2*r1i_bound] (the shift operation is constrained inside the circuit)
-        r1i_shifted = Polynomial([(coeff + int(r1i_bound)) % p for coeff in r1is_assigned[i].coefficients])
-        assert all(coeff >= 0 and coeff <= 2*r1i_bound for coeff in r1i_shifted.coefficients)
+        poly_range_check(r1is[i],r1is_assigned[i],p,r1i_bound)
+
 
         phase_1_range_check_advice_cell_count += count_advice_cells_needed_for_poly_range_check(r1is_assigned[i], 2*r1i_bound + 1, lookup_bits)
 
