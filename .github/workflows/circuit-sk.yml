@@ -13,16 +13,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.11.1
-
-    - name: Install dependencies
-      run: |
-        pip3 install -r scripts/requirements.txt
-
-    - name: Generate Parameters for circuit and Run Tests
+    - name: Run Tests
       run: |
         cargo build
         cargo test --release -- --nocapture
