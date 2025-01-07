@@ -117,12 +117,16 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
 
         // EXPOSE PUBLIC INPUTS ais and ct0is
         for ai in ais_assigned.iter() {
-            public_inputs.push(ai.assigned_coefficients[0]);
+            for assigned_coefficient in &ai.assigned_coefficients {
+                public_inputs.push(*assigned_coefficient);
+            }
         }
 
         // push each ct0i polynomial to the public inputs
         for ct0i in ct0is_assigned.iter() {
-            public_inputs.push(ct0i.assigned_coefficients[0]);
+            for assigned_coefficient in &ct0i.assigned_coefficients {
+                public_inputs.push(*assigned_coefficient);
+            }
         }
 
         builder.base.assigned_instances[0] = public_inputs;
@@ -251,11 +255,11 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
         let mut instance = vec![];
         for ai in self.ais.iter() {
             let ai_poly = Poly::<F>::new(ai.clone());
-            instance.push(ai_poly.coefficients[0]);
+            instance.extend(ai_poly.coefficients);
         }
         for ct0i in self.ct0is.iter() {
             let ct0i_poly = Poly::<F>::new(ct0i.clone());
-            instance.push(ct0i_poly.coefficients[0]);
+            instance.extend(ct0i_poly.coefficients);
         }
         vec![instance]
     }
@@ -336,7 +340,7 @@ mod test {
 
         // 2. Generate (unsafe) trusted setup parameters
         // Here we are setting a small k for optimization purposes
-        let k = 14;
+        let k = 15;
         let kzg_params = gen_srs(k as u32);
 
         // 3. Build the circuit for key generation,
@@ -510,7 +514,7 @@ mod test {
 
         // Generate unsafe parameters for different values of k
         let mut configs = vec![];
-        for k in 12..=18 {
+        for k in 15..=20 {
             let kzg_params = gen_srs(k as u32);
             let config = Config { kzg_params, k };
             configs.push(config)
