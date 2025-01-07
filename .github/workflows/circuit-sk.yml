@@ -24,9 +24,5 @@ jobs:
 
     - name: Generate Parameters for circuit and Run Tests
       run: |
-        python3 scripts/circuit_sk.py -n 4096 -qis '[                                      
-            27424203952895201, 
-            27424203952895203
-        ]' -t 65537
         cargo build
-        cargo test --release --features bench -- --nocapture
+        cargo test --release -- --nocapture
