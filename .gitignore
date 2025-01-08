@@ -15,3 +15,6 @@ Cargo.lock
 
 # KZG PARAMS
 params
+
+# Python virtual environment
+.venv/

@@ -1,4 +1,4 @@
-use crate::constants::sk_enc_constants_4096_2x55_65537::{
+use crate::constants::sk_enc_constants::sk_enc_constants_4096_2x55_65537::{
     E_BOUND, K0IS, K1_BOUND, N, QIS, R1_BOUNDS, R2_BOUNDS, S_BOUND,
 };
 use crate::poly::{Poly, PolyAssigned};
@@ -250,7 +250,6 @@ impl<F: ScalarField> RlcCircuitInstructions<F> for BfvSkEncryptionCircuit {
             gate.assert_is_const(ctx_gate, &res, &F::from(1));
         }
     }
-
     fn instances(&self) -> Vec<Vec<F>> {
         let mut instance = vec![];
         for ai in self.ais.iter() {
@@ -270,7 +269,7 @@ mod test {
 
     use super::test_params;
     use crate::{
-        constants::sk_enc_constants_4096_2x55_65537::R1_BOUNDS,
+        constants::sk_enc_constants::sk_enc_constants_4096_2x55_65537::R1_BOUNDS,
         sk_encryption_circuit::BfvSkEncryptionCircuit,
     };
     use axiom_eth::rlc::{
@@ -301,7 +300,7 @@ mod test {
     #[test]
     pub fn test_sk_enc_valid() {
         // 1. Define the inputs of the circuit
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+        let file_path = "src/data/sk_enc_data/sk_enc_4096_2x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
@@ -332,7 +331,7 @@ mod test {
     pub fn test_sk_enc_full_prover() {
         // 1. Define the inputs of the circuit.
         // Since we are going to use this circuit instance for key gen, we can use an input file in which all the coefficients are set to 0
-        let file_path_zeroes = "src/data/sk_enc_4096_2x55_65537_zeroes.json";
+        let file_path_zeroes = "src/data/sk_enc_data/sk_enc_4096_2x55_65537_zeroes.json";
         let mut file = File::open(file_path_zeroes).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
@@ -365,7 +364,7 @@ mod test {
             RlcCircuitBuilder::from_stage(CircuitBuilderStage::Prover, 0)
                 .use_params(rlc_circuit_params);
 
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+        let file_path = "src/data/sk_enc_data/sk_enc_4096_2x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
@@ -389,7 +388,7 @@ mod test {
     #[test]
     pub fn test_sk_enc_invalid_range() {
         // 1. Define the inputs of the circuit
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+        let file_path = "src/data/sk_enc_data/sk_enc_4096_2x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
@@ -446,7 +445,7 @@ mod test {
     #[test]
     pub fn test_sk_enc_invalid_polys() {
         // 1. Define the inputs of the circuit
-        let file_path = "src/data/sk_enc_4096_2x55_65537.json";
+        let file_path = "src/data/sk_enc_data/sk_enc_4096_2x55_65537.json";
         let mut file = File::open(file_path).unwrap();
         let mut data = String::new();
         file.read_to_string(&mut data).unwrap();
@@ -505,7 +504,7 @@ mod test {
     #[test]
     #[cfg(feature = "bench")]
     pub fn bench_sk_enc_full_prover() {
-        let file_path = "src/data/sk_enc_4096_2x55_65537";
+        let file_path = "src/data/sk_enc_data/sk_enc_4096_2x55_65537";
 
         pub struct Config {
             kzg_params: ParamsKZG<Bn256>,
